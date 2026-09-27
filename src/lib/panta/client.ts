@@ -537,12 +537,13 @@ export const panta = {
       label: 'create-quote',
     }),
 
-  createBuild: (createId: string, userId: string) =>
-    pantaPost<import('./types').CreateBuildResponse>(
-      'markets/create/build/',
-      { createId, userId },
-      { family: 'build', idempotent: false, userId, label: 'create-build' },
-    ),
+  createBuild: (body: import('./types').CreateBuildRequest) =>
+    pantaPost<import('./types').CreateBuildResponse>('markets/create/build/', body, {
+      family: 'build',
+      idempotent: false,
+      userId: body.userId,
+      label: 'create-build',
+    }),
 
   /** Idempotent on (createId, signature). Retry freely. */
   register: (body: import('./types').RegisterRequest) =>
@@ -561,7 +562,12 @@ export const panta = {
       label: 'order-quote',
     }),
 
-  primaryOrderBuild: (body: { orderId: string; userId: string }) =>
+  /**
+   * ⚠ Takes a QUOTE ID. The orderId is minted HERE and comes back in the
+   * response. The two are easy to swap — the response carries the orderId and
+   * the request does not — and a swap is a 400 with no useful message.
+   */
+  primaryOrderBuild: (body: import('./types').OrderBuildRequest) =>
     pantaPost<import('./types').OrderBuildResponse>('primaryorderbuild/', body, {
       family: 'build',
       idempotent: false,
@@ -577,14 +583,20 @@ export const panta = {
       label: 'order-submit',
     }),
 
-  primaryOrderVerify: (orderId: string) =>
-    pantaPost<import('./types').OrderVerifyResponse>('primaryorderverify/', { orderId }, {
+  /** Omit the signature to ask "is this order still good?" before one exists. */
+  primaryOrderVerify: (body: import('./types').OrderVerifyRequest) =>
+    pantaPost<import('./types').OrderVerifyResponse>('primaryorderverify/', body, {
       family: 'read',
       idempotent: true,
       label: 'order-verify',
     }),
 
   // ── Claim. TRANSACTION SHAPE B, same as buy. ────────────────────────────
+  /**
+   * There is no claim SUBMIT step. The claim is finished the moment the
+   * transaction confirms; `/trades/` afterwards is a receipt to Panta, not a
+   * submission. Forgetting this is a common way to leave a claim half-reported.
+   */
   claimBuild: (wallet: string, marketId: string) =>
     pantaPost<import('./types').ClaimBuildResponse>('claim/build/', { wallet, marketId }, {
       family: 'build',

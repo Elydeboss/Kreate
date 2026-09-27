@@ -1,5 +1,5 @@
 /**
- * Verification for the Panta resilience layer.
+ * Verification for the Panta resilience layer and the API contract around it.
  *
  *   node --experimental-strip-types scripts/verify-resilience.ts
  *
@@ -12,7 +12,15 @@
  * These are assertions about BEHAVIOUR, not unit tests with mocks. The point is
  * to prove the specific traps documented in cache.ts and limiter.ts are actually
  * avoided by the code as written.
+ *
+ * The last block is different in kind: it asserts things about the SHAPE of the
+ * Panta contract, by reading the source. Those are the failures that no type
+ * checker catches and that a demo does.
  */
+
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { _resetLimiter, acquire, FAMILY_LIMITS, snapshot } from '../src/lib/panta/limiter.ts'
 import {
@@ -32,9 +40,10 @@ import {
   type BreakerOptions,
 } from '../src/lib/panta/breaker.ts'
 
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
 let passed = 0
 let failed = 0
-
 function check(name: string, condition: boolean, detail = ''): void {
   if (condition) {
     passed += 1
@@ -313,6 +322,198 @@ function testPriceBudget(): void {
   console.log('        cadence:', [1, 3, 8, 20, 40].map((n) => `${n}m=${derivedTtl(n)}ms`).join('  '))
 }
 
+// ── Contract drift guards ────────────────────────────────────────────────────
+
+/**
+ * Assertions about the Panta contract itself, which no amount of resilience
+ * testing can catch.
+ *
+ * The failure these exist for is specific and expensive: a request shape drifts,
+ * the call still returns 200 or a 400 we do not recognise, and the bug is
+ * discovered on stage. The type system cannot help — a drifted field is still a
+ * valid string. So the parts of the contract we are most likely to have got
+ * wrong, and which cost the most when wrong, are pinned here as executable
+ * claims about the source.
+ *
+ * These read the source rather than calling the API on purpose. `npm run verify`
+ * has to pass with no key, no network and no database, because it is the check
+ * that runs before every commit.
+ */
+function testContractInvariants(): void {
+  console.log('\ncontract invariants')
+
+  // Comments are stripped before anything is asserted on. These files are heavily
+  // and deliberately commented — the notes about WHY the fee is not an input
+  // contain the words "paymentUsdc" more than once — and a checker that matched
+  // prose would fail on the documentation being good. What is asserted here is
+  // the code, never the comment.
+  const client = code('src/lib/panta/client.ts')
+  const types = code('src/lib/panta/types.ts')
+  const create = code('src/server/marketCreate.ts')
+  const buy = code('src/server/marketBuy.ts')
+
+  // The create fee is QUOTED, never requested. Every published Panta example
+  // shows `paymentUsdc` on the response and invites you to copy it into the
+  // request, where it is ignored. Sending it anyway would mean budgeting markets
+  // from a hardcoded number instead of the one Panta actually charges.
+  const quoteCall = callArgs(create, 'panta.createQuote')
+  check('the create quote call is findable', quoteCall.length > 0)
+  check('create quote does not send a paymentUsdc', !quoteCall.includes('paymentUsdc'))
+  check(
+    'CreateQuoteRequest has no paymentUsdc field',
+    !slice(types, 'interface CreateQuoteRequest', '\n}').includes('paymentUsdc'),
+  )
+  check(
+    'CreateQuoteRequest does require a wallet',
+    slice(types, 'interface CreateQuoteRequest', '\n}').includes('wallet'),
+  )
+
+  // The two build shapes. This is the asymmetry that kills demos, and the whole
+  // reason createTx.ts and instructionTx.ts are separate files.
+  check('create build goes to markets/create/build/', client.includes("'markets/create/build/'"))
+  check('order build goes to primaryorderbuild/', client.includes("'primaryorderbuild/'"))
+  check(
+    'the two tx paths live in separate modules',
+    exists('src/lib/tx/createTx.ts') && exists('src/lib/tx/instructionTx.ts'),
+  )
+
+  // Build takes a QUOTE ID and mints the orderId. Swapping them is a 400 whose
+  // message reads like a server fault, because the response is the thing that
+  // carries the orderId.
+  const orderBuild = slice(types, 'interface OrderBuildRequest', '\n}')
+  check('order build takes a quoteId', orderBuild.includes('quoteId'))
+  check('order build does not take an orderId', !orderBuild.includes('orderId'))
+  check('order build requires the wallet', orderBuild.includes('wallet'))
+  check(
+    'the server passes the quoteId, not an orderId, to the build',
+    callArgs(buy, 'panta.primaryOrderBuild').includes('quoteId'),
+  )
+
+  // Submit and verify both need the wallet. Panta cannot tie a signature to a
+  // buyer without it, and the failure reads as a mysteriously rejected order
+  // rather than a missing field.
+  check(
+    'order submit sends the wallet',
+    slice(types, 'interface OrderSubmitRequest', '\n}').includes('wallet'),
+  )
+
+  // Every write that hands Panta a signature has to check the caller owns it.
+  // The X-Pulse-Wallet header is forgeable; these are the places where that
+  // stops mattering.
+  check('buy verifies the order belongs to the wallet', buy.includes('requireOwnedOrder'))
+  check(
+    'create verifies the create belongs to the wallet',
+    create.includes('create.wallet !== user.wallet'),
+  )
+
+  // Live Mode markets. `eventInProgress` is the only reason a mid-match market is
+  // possible at all: without it Panta demands a start at least an hour out.
+  check('live markets are created as breaking', create.includes("'breaking'"))
+  check('live markets set eventInProgress', create.includes('eventInProgress'))
+
+  // The app's category allowlist and Panta's are reconciled by a cast in
+  // marketCreate.ts. That cast is the weak point, so the lists are compared here
+  // rather than trusted.
+  const appCategories = listOf(code('src/lib/db/queries/markets.ts'), 'MARKET_CATEGORIES')
+  const pantsCategories = listOf(types, 'PANTA_CATEGORIES')
+  check(
+    'the app and Panta category lists agree',
+    appCategories.length > 0 &&
+      appCategories.length === pantsCategories.length &&
+      appCategories.every((c) => pantsCategories.includes(c)),
+    `app=[${appCategories}] panta=[${pantsCategories}]`,
+  )
+}
+
+/** A source file with its comments removed. */
+function code(path: string): string {
+  if (!exists(path)) return ''
+  return stripComments(readFileSync(join(ROOT, path), 'utf8'))
+}
+
+/**
+ * Remove comments while preserving line structure.
+ *
+ * Line numbers are not needed, but newlines are: several checks match on
+ * `'\n}'` to bound an interface, and collapsing a block comment to a single line
+ * would join a declaration onto the next one and break that bound.
+ *
+ * Strings are not parsed, which is a known limitation — a `//` inside a string
+ * literal would be treated as a comment. No Panta route, error code or copy in
+ * this codebase contains one, and the alternative is a real tokenizer, which is
+ * not worth it for a check whose worst failure is a false alarm.
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/\/\/[^\n]*/g, '')
+}
+
+function read(path: string): string {
+  return exists(path) ? readFileSync(join(ROOT, path), 'utf8') : ''
+}
+
+function exists(path: string): boolean {
+  return existsSync(join(ROOT, path))
+}
+
+/** The text from `from` up to the next `to`, or to the end if `to` is absent. */
+function slice(source: string, from: string, to: string): string {
+  const start = source.indexOf(from)
+  if (start === -1) return ''
+  const end = source.indexOf(to, start + from.length)
+  return end === -1 ? source.slice(start) : source.slice(start, end)
+}
+
+/**
+ * The string literals in a `const NAME = [...]` declaration.
+ *
+ * Finds the `[` after the `=`, NOT the first `[` after the name — the name is
+ * followed by a type annotation (`readonly MarketCategory[]`), and taking that
+ * bracket pair yields an empty array and a check that silently passes against
+ * nothing. The two lists are declared differently, one annotating and one
+ * relying on `as const`, so the `=` is the only reliable anchor.
+ */
+function listOf(source: string, name: string): string[] {
+  const start = source.indexOf(name)
+  if (start === -1) return []
+  const assign = source.indexOf('=', start)
+  if (assign === -1) return []
+  const open = source.indexOf('[', assign)
+  if (open === -1) return []
+  const close = source.indexOf(']', open)
+  // `m[1]` is `string | undefined` under noUncheckedIndexedAccess, and flatMap
+  // narrows it without a non-null assertion that the regex cannot actually
+  // violate but a future edit might.
+  return [...source.slice(open, close).matchAll(/'([a-z]+)'/g)].flatMap((m) => (m[1] ? [m[1]] : []))
+}
+
+/**
+ * The argument text of a call, by matching braces.
+ *
+ * Used instead of slicing to a fixed terminator because the terminator is
+ * indentation, and a check whose correctness depends on how deep a call happens
+ * to be nested is a check that will fail on a reformat rather than on a bug.
+ * Track the depth from the opening paren and stop at the one that closes it.
+ */
+function callArgs(source: string, callee: string): string {
+  const at = source.indexOf(callee)
+  if (at === -1) return ''
+  const open = source.indexOf('(', at)
+  if (open === -1) return ''
+
+  let depth = 0
+  for (let i = open; i < source.length; i += 1) {
+    const ch = source[i]
+    if (ch === '(' || ch === '{' || ch === '[') depth += 1
+    else if (ch === ')' || ch === '}' || ch === ']') {
+      depth -= 1
+      if (depth === 0) return source.slice(open + 1, i)
+    }
+  }
+  return ''
+}
+
 // ── Run ─────────────────────────────────────────────────────────────────────
 
 console.log('Pulse resilience verification\n' + '='.repeat(40))
@@ -321,6 +522,7 @@ await testLimiter()
 await testCache()
 testBreaker()
 testPriceBudget()
+testContractInvariants()
 
 console.log('\n' + '='.repeat(40))
 console.log(`passed ${passed}  failed ${failed}`)

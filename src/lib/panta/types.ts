@@ -187,8 +187,20 @@ export interface PantaTrade {
 
 // ── Create market ───────────────────────────────────────────────────────────
 
-/** POST /markets/create/quote/ */
+/**
+ * POST /markets/create/quote/
+ *
+ * ⚠ THE FEE IS NOT AN INPUT. There is no `paymentUsdc` in this body. Panta
+ * quotes the creation fee and returns it; the client cannot choose or cap it.
+ * This is the single most important correction from the published examples,
+ * which show `paymentUsdc` on the RESPONSE and invite you to copy it sideways.
+ * Pulse therefore cannot budget markets from a hardcoded figure — the quote is
+ * the budget line, and the first call in rehearsal is the one that tells us what
+ * a market actually costs. See ARCHITECTURE.md §3.3.
+ */
 export interface CreateQuoteRequest {
+  /** The wallet that will sign. Required — Panta derives the event PDA from it. */
+  wallet: SolanaAddress
   question: string
   title: string
   category: PantaCategory
@@ -196,18 +208,27 @@ export interface CreateQuoteRequest {
   imageUrl: string
   marketType: MarketType
   /**
-   * MUST be true for every Live Mode market. startTime is otherwise required to
-   * be at least minimumStartDelay (typically 3600s) ahead of now, which makes a
-   * mid-match market impossible. See ARCHITECTURE.md §3.4.
+   * MUST be true for every Live Mode market. Without it, startTime is required
+   * to be at least minimumStartDelay (typically 3600s) ahead of now, which makes
+   * a mid-match market impossible.
+   *
+   * With it, Panta inverts the constraint and requires startTime <= now <= endTime.
+   * Panta rejects the inverse case too: a `breaking` market with eventInProgress
+   * off must have a FUTURE startTime. Both directions are validated server-side
+   * in marketCreate.ts. See ARCHITECTURE.md §3.4.
    */
   eventInProgress: boolean
   resolutionRule: string
   sourcesOfTruth: string[]
+  /** Unix seconds. */
   startTime: number
   endTime: number
   resolutionTime: number
-  /** Base units. */
-  paymentUsdc: UsdcBaseUnits
+  /** Free text. Defaults to "Global"; Panta accepts it. */
+  region?: string
+  description?: string
+  /** Panta's resolver. Omit and Panta uses its default oracle. */
+  oracle?: string
   /** Pulse user id, for Panta-side attribution. */
   userId: string
 }
@@ -217,8 +238,20 @@ export interface CreateQuoteResponse {
   createId: string
   /** The real market-creation fee, in base units. The actual budget line. */
   paymentUsdc: string
-  expectedEventPda?: string
-  expiresAt?: string
+  /** PDA the market will land at. Known before signing — useful for the tape. */
+  expectedEventPda: string
+  /** What the fee buys: liquidity injected into the pool. */
+  liquidityInjectionUsdc?: string
+  /** Panta's cut of the same. */
+  platformRevenueUsdc?: string
+  marketType: string
+  expiresAt: string
+  /**
+   * How much life the createId's blockhash has left. Panta telling us its own
+   * deadline is worth more than our 60s assumption, and this is the number to
+   * show a user whose wallet popup is taking too long.
+   */
+  blockhashExpiryHintSec?: number
 }
 
 /**
@@ -228,10 +261,27 @@ export interface CreateQuoteResponse {
  * Deserialize, sign, broadcast. Do NOT treat this as instructions[]; that is
  * shape B and the two are not interchangeable.
  */
+export interface CreateBuildRequest {
+  createId: string
+  /** The same wallet that was quoted. Panta checks it against the createId. */
+  wallet: SolanaAddress
+  userId: string
+}
+
 export interface CreateBuildResponse {
+  createId: string
+  expectedEventPda: string
+  /** Base64, pre-assembled, UNSIGNED. Shape A. */
   transaction: string
-  recentBlockhash?: string
-  lastValidBlockHeight: number
+  recentBlockhash: string
+  lastValidBlockHeight?: number
+  /** The fee this build will charge. Compare against the quote to catch a change. */
+  paymentUsdc: string
+  marketType: string
+  /** Changes if the build is called again with a different blockhash. */
+  buildFingerprint?: string
+  /** Panta's derived accounts. Useful in a bug report, useless otherwise. */
+  derived?: Record<string, string>
   /** ~5 min, matches createId. */
   expiresAt?: string
 }
@@ -243,9 +293,15 @@ export interface RegisterRequest {
 }
 
 export interface RegisterResponse {
+  createId: string
+  /** The Panta market id — an event PDA. This is what buys and claims reference. */
   marketId: string
   status: string
-  expectedEventPda?: string
+  /** Echoed back. Recorded in our ledger so the tape can resolve it without a call. */
+  signature: string
+  category?: string
+  title?: string
+  images?: string[]
 }
 
 // ── Primary orders (buy) ────────────────────────────────────────────────────
@@ -266,10 +322,19 @@ export interface OrderQuoteRequest {
 export interface OrderQuoteResponse {
   /** TTL ~90 seconds. */
   quoteId: string
+  marketId: string
+  side: OrderSide
+  amountUsdc: string
   shares: string
-  avgPrice: number
-  feeUsdc?: string
-  expiresAt?: string
+  /**
+   * A DECIMAL STRING, not a number. Panta returns `"0.63"` here while
+   * `/markets/{id}/` returns yesPrice as a JSON number. Converting this one
+   * eagerly to a float is how a price renders as 0.6299999999999999 in the UI.
+   * Keep the string until it is formatted for a human.
+   */
+  avgPrice: string
+  feeUsdc: string
+  expiresAt: string
 }
 
 /**
@@ -278,17 +343,45 @@ export interface OrderQuoteResponse {
  * TRANSACTION SHAPE B — raw instructions. You compile the message yourself.
  * TTL ~120s. Blockhash is valid ~60s, which is the tightest constraint in the
  * whole product. See ARCHITECTURE.md §3.2.
+ *
+ * ⚠ THE INPUT IS `quoteId`, NOT `orderId`. The orderId is minted BY this call
+ * and comes back in the response. Passing an orderId here is a 400, and it is
+ * an easy mistake because the response is the thing that has the orderId in it.
  */
-export interface OrderBuildResponse extends InstructionBuild {
-  orderId: string
+export interface OrderBuildRequest {
   quoteId: string
-  expiresAt?: string
+  /** The buyer. Must match the wallet that was quoted. */
+  wallet: SolanaAddress
+  /** Defaults server-side to 100 (1%). */
+  maxSlippageBps?: number
+  userId: string
 }
 
-/** POST /primaryordersubmit/ — idempotent on (orderId, signature). */
+export interface OrderBuildResponse extends InstructionBuild {
+  /** Minted by this call. It is the handle for submit and verify. */
+  orderId: string
+  quoteId: string
+  wallet: SolanaAddress
+  marketId: string
+  side: OrderSide
+  amountUsdc: string
+  /** What you get if the order fills exactly. Slippage is measured against this. */
+  expectedShares: string
+  feeUsdc: string
+  status: string
+}
+
+/**
+ * POST /primaryordersubmit/ — idempotent on (orderId, signature).
+ *
+ * `wallet` is required. Without it Panta cannot tie the signature to the buyer
+ * and the submit is rejected, which reads as a mysteriously failed order rather
+ * than a missing field.
+ */
 export interface OrderSubmitRequest {
   orderId: string
   signature: string
+  wallet: SolanaAddress
 }
 
 export interface OrderSubmitResponse {
@@ -296,7 +389,19 @@ export interface OrderSubmitResponse {
   status: string
 }
 
-/** POST /primaryorderverify/ */
+/**
+ * POST /primaryorderverify/
+ *
+ * `signature` and `wallet` are both accepted. Omitting a signature is how you
+ * ask "is this order ok so far", which is the right question after a build and
+ * before the wallet popup returns.
+ */
+export interface OrderVerifyRequest {
+  orderId: string
+  signature?: string
+  wallet?: SolanaAddress
+}
+
 export type OrderVerifyStatus = 'built' | 'submitted' | 'confirmed' | 'failed'
 
 export interface OrderVerifyResponse {
@@ -351,14 +456,36 @@ export interface ClaimBuildResponse extends InstructionBuild {
  */
 export interface ReportTradeRequest {
   signature: string
-  kind: 'buy' | 'claim'
-  userId: string
-  marketId?: string
+  /** Required. Panta ties the signature to the trader with it. */
+  wallet: SolanaAddress
+  /** Required, and it is the Panta market id (event PDA), not ours. */
+  marketId: string
+  /** The quote this order was built from, if we kept it. */
+  quoteId?: string
+  /** Our orderId. Panta echoes it for reconciliation. */
+  clientOrderId?: string
+  /** Pulse user id, for attribution. */
+  userId?: string
+  /**
+   * Panta infers this from the transaction. Send it only for a claim, where
+   * there is no orderId to infer from.
+   */
+  kind?: 'buy' | 'claim'
 }
 
+/**
+ * POST /trades/ — attribution. Idempotent on signature, so retry freely.
+ *
+ * Note there is NO submit counterpart for claims: the claim is complete the
+ * moment the transaction confirms. `/trades/` is purely a receipt to Panta.
+ */
 export interface ReportTradeResponse {
-  reported: boolean
   signature: string
+  status: string
+  marketId?: string
+  wallet?: string
+  side?: string
+  kind?: string
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

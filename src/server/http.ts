@@ -13,6 +13,7 @@ import 'server-only'
 import { NextResponse } from 'next/server'
 import { IdempotencyError, IDEMPOTENCY_HEADER } from './idempotency'
 import { InvalidWalletError, MissingWalletError } from './identity'
+import { InvariantError } from './guards'
 import { PantaError } from '@/lib/panta/errors'
 
 export function jsonOk<T>(data: T, init?: ResponseInit): NextResponse {
@@ -65,6 +66,20 @@ export function handleRouteError(err: unknown, context: string): NextResponse {
 
   if (err instanceof InvalidWalletError) {
     return NextResponse.json({ error: err.message }, { status: 400 })
+  }
+
+  if (err instanceof InvariantError) {
+    // Some of these are the caller's fault and some are ours, and the two must
+    // not share a status. A malformed signature is a 400 with a sentence the user
+    // can act on. A record that should have had a session and does not is a bug
+    // in a flow we wrote, and answering it with a 500 is what makes it findable
+    // in the logs instead of being swallowed as a client error.
+    const callerFault = err.code === 'BAD_SIGNATURE'
+    if (!callerFault) console.error(`[api/${context}] invariant`, err.code, err.detail)
+    return NextResponse.json(
+      { error: err.message, code: err.code },
+      { status: callerFault ? 400 : 500 },
+    )
   }
 
   console.error(`[api/${context}] unhandled`, err)
