@@ -13,8 +13,11 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { StalenessStamp, PoweredByPanta, TxLink } from '@/components/compliance/PantaCompliance'
+import { BuySheet } from '@/components/trade/BuySheet'
 import { apiGet, ApiError } from '@/lib/client/api'
+import { clientConfig } from '@/lib/client/config'
 import { asPrice, memberName, priceLabel, usdc, usdcSigned, usdcCompact, countdown, type PantaPrice } from '@/lib/format'
+import { useConnection } from '@/lib/wallet/useWallet'
 import { useWalletContext } from '@/lib/wallet/WalletProvider'
 
 // ── Wire types, mirroring the room route's response ─────────────────────────
@@ -95,9 +98,16 @@ function pollInterval(ttlMs: number): number {
 
 export function Room({ circleId }: { circleId: string }) {
   const { connected } = useWalletContext()
+  const connection = useConnection(clientConfig.rpcUrl)
   const [room, setRoom] = useState<RoomSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+
+  // Which market's buy sheet is open, if any. Held as an id + side rather than
+  // a component ref, so a poll landing mid-buy cannot close the sheet the user
+  // is signing in: the market object changes underneath it on every poll, and
+  // keying the sheet on the object would remount it and throw away the quote.
+  const [buying, setBuying] = useState<{ marketId: string; side: 'yes' | 'no' } | null>(null)
 
   // Survives a hidden tab. Polling continues on a phone that has been pocketed,
   // which is where most of a watch party actually happens.
@@ -151,6 +161,11 @@ export function Room({ circleId }: { circleId: string }) {
   const remainingMs = room.session ? new Date(room.session.endsAt).getTime() - Date.now() : 0
   const live = room.session?.status === 'active' && remainingMs > 0
 
+  // Resolved by id on every render, so the sheet shows the LATEST polled price
+  // while still being keyed on the id. Passing the market object down would keep
+  // the sheet's headline price frozen at whatever it was when the user tapped.
+  const buyTarget = buying ? room.markets.find((m) => m.id === buying.marketId) ?? null : null
+
   return (
     <div className="flex flex-col gap-6 pb-10">
       <header className="flex flex-col gap-2 border-b border-[var(--border)] px-4 py-4">
@@ -195,7 +210,7 @@ export function Room({ circleId }: { circleId: string }) {
         ) : (
           <ul className="flex flex-col gap-3">
             {room.markets.map((market) => (
-              <MarketCard key={market.id} market={market} />
+              <MarketCard key={market.id} market={market} onBuy={(side) => setBuying({ marketId: market.id, side })} />
             ))}
           </ul>
         )}
@@ -274,12 +289,30 @@ export function Room({ circleId }: { circleId: string }) {
         )}
       </section>
 
+      {buying && connected && buyTarget && (
+        <BuySheet
+          marketId={buyTarget.id}
+          marketTitle={buyTarget.title}
+          side={buying.side}
+          displayedPrice={buying.side === 'yes' ? buyTarget.yesPrice : buyTarget.noPrice}
+          circleId={room.circle.id}
+          connection={connection}
+          signer={connected.signer}
+          wallet={connected.address}
+          onClose={() => setBuying(null)}
+          // A confirmed trade changes the tape, the price, and possibly the
+          // scoreboard. Re-reading immediately is what makes the room feel like
+          // it reacted rather than that it will update in a moment.
+          onSettled={() => void load()}
+        />
+      )}
+
       <PoweredByPanta />
     </div>
   )
 }
 
-function MarketCard({ market }: { market: Market }) {
+function MarketCard({ market, onBuy }: { market: Market; onBuy: (side: 'yes' | 'no') => void }) {
   const yes = asPrice(market.yesPrice)
   const no = asPrice(market.noPrice)
 
@@ -325,8 +358,8 @@ function MarketCard({ market }: { market: Market }) {
       </div>
 
       <div className="flex items-stretch gap-2">
-        <SideButton side="yes" price={yes} />
-        <SideButton side="no" price={no} />
+        <SideButton side="yes" price={yes} onClick={() => onBuy('yes')} />
+        <SideButton side="no" price={no} onClick={() => onBuy('no')} />
       </div>
 
       {market.pricesAsOf && (
@@ -346,13 +379,25 @@ function MarketCard({ market }: { market: Market }) {
  * colour-blind user, and a width-encoded bar on a 360px screen next to a 44px
  * touch target is worse than a number. The label is the data.
  *
- * The buy action itself lands in the next task; this is the read surface.
+ * Opening the buy sheet is NOT the buy. The sheet quotes, shows the real price,
+ * and the user confirms. One tap here spends nothing, which is why this can be
+ * large and forgiving — the only tap that costs money is one the user has read a
+ * number next to.
  */
-function SideButton({ side, price }: { side: 'yes' | 'no'; price: PantaPrice | null }) {
+function SideButton({
+  side,
+  price,
+  onClick,
+}: {
+  side: 'yes' | 'no'
+  price: PantaPrice | null
+  onClick: () => void
+}) {
   const isYes = side === 'yes'
   return (
     <button
       type="button"
+      onClick={onClick}
       // Buy YES / Buy NO. On stage this is the tap that proves the whole thing.
       aria-label={`Buy ${side.toUpperCase()}`}
       className={`flex min-h-[2.75rem] flex-1 items-center justify-between gap-2 rounded-[var(--radius)] px-3 font-semibold ${

@@ -18,7 +18,7 @@
  * checker catches and that a demo does.
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -442,6 +442,52 @@ function testContractInvariants(): void {
       appCategories.every((c) => pantsCategories.includes(c)),
     `app=[${appCategories}] panta=[${pantsCategories}]`,
   )
+
+  // ── The client/server boundary, at the layer where it would be crossed ──────
+  //
+  // Signed transactions never touch the Pulse server. That is not a preference:
+  // a server that can see a signature can finish a transaction, and a server
+  // that holds a key can do it without the user. The property is easy to state
+  // and easy to erode — one convenience import of a Panta call into a hook and
+  // the boundary is gone, with no type error and no failing test.
+  //
+  // So it is asserted on the hooks themselves: nothing under src/lib/trade may
+  // reach into src/server or src/lib/panta. Those hooks are exactly where the
+  // boundary lives, and they are browser code.
+  const tradeDir = join(ROOT, 'src/lib/trade')
+  const tradeFiles = existsSync(tradeDir)
+    ? readdirSync(tradeDir).filter((f) => f.endsWith('.ts') || f.endsWith('.tsx'))
+    : []
+  check('the client trade flows exist', tradeFiles.length > 0, `found ${tradeFiles.length}`)
+
+  for (const file of tradeFiles) {
+    // `import type { X } from '@/lib/panta/types'` is erased by the compiler and
+    // never reaches the browser bundle, so it is not a boundary crossing. The
+    // whole statement is removed first so the check below sees only imports that
+    // actually emit. Note that `panta/types.ts` is NOT a pure type module — it
+    // exports runtime consts such as the category allowlist — which is exactly
+    // why the erasure has to be the compiler's and not an assumption.
+    const src = code(`src/lib/trade/${file}`).replace(/import\s+type\s+[^;]*?from\s*'[^']*'/g, '')
+    const forbidden = ['@/server', '@/lib/panta', '@/lib/db'].filter((m) => src.includes(`'${m}`))
+    check(
+      `client flow ${file} never imports server-side code`,
+      forbidden.length === 0,
+      forbidden.join(', '),
+    )
+  }
+
+  // And the other direction: the flows must actually sign in the browser rather
+  // than POSTing a private key or a half-signed transaction somewhere. Checking
+  // for the ABSENCE of a key field is the only version of this that is worth
+  // anything — asserting that `signAndSend` is called proves only that the word
+  // appears.
+  for (const file of tradeFiles) {
+    const src = code(`src/lib/trade/${file}`)
+    check(
+      `client flow ${file} sends no key material`,
+      !/secretKey|privateKey|mnemonic|seedPhrase/i.test(src),
+    )
+  }
 }
 
 /** A source file with its comments removed. */
