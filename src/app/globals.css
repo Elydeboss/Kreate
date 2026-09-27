@@ -1,0 +1,98 @@
+@import 'tailwindcss';
+
+/*
+ * Pulse design tokens.
+ *
+ * Mobile-first throughout. Touch targets are never below 44px, because this is
+ * a surface people use one-handed on a phone while watching something else.
+ */
+
+:root {
+  --surface: oklch(99% 0.004 260);
+  --surface-raised: oklch(100% 0 0);
+  --surface-sunken: oklch(96.5% 0.006 260);
+  --border: oklch(90% 0.008 260);
+  --border-strong: oklch(82% 0.012 260);
+
+  --text: oklch(21% 0.015 260);
+  --text-muted: oklch(52% 0.014 260);
+  --text-faint: oklch(66% 0.012 260);
+
+  /* YES / NO are the two axes of the entire product. They must be
+     distinguishable at a glance, in sunlight, and for colour-blind users —
+     hence a hue difference AND a lightness difference AND always a text label. */
+  --yes: oklch(62% 0.16 152);
+  --yes-strong: oklch(50% 0.15 152);
+  --yes-wash: oklch(95% 0.04 152);
+  --no: oklch(58% 0.19 22);
+  --no-strong: oklch(47% 0.18 22);
+  --no-wash: oklch(95% 0.04 22);
+
+  --accent: oklch(56% 0.17 262);
+  --accent-wash: oklch(95% 0.03 262);
+  --warn: oklch(70% 0.15 75);
+  --warn-wash: oklch(96% 0.05 75);
+  --danger: oklch(55% 0.19 25);
+
+  --radius: 0.75rem;
+  --radius-sm: 0.5rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: oklch(17% 0.012 260);
+    --surface-raised: oklch(21% 0.014 260);
+    --surface-sunken: oklch(14% 0.011 260);
+    --border: oklch(30% 0.014 260);
+    --border-strong: oklch(40% 0.016 260);
+
+    --text: oklch(96% 0.005 260);
+    --text-muted: oklch(72% 0.014 260);
+    --text-faint: oklch(58% 0.014 260);
+
+    --yes: oklch(70% 0.16 152);
+    --yes-strong: oklch(78% 0.16 152);
+    --yes-wash: oklch(28% 0.06 152);
+    --no: oklch(66% 0.18 22);
+    --no-strong: oklch(74% 0.17 22);
+    --no-wash: oklch(28% 0.07 22);
+
+    --accent: oklch(68% 0.16 262);
+    --accent-wash: oklch(28% 0.06 262);
+    --warn: oklch(78% 0.14 75);
+    --warn-wash: oklch(30% 0.06 75);
+    --danger: oklch(66% 0.18 25);
+  }
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background: var(--surface);
+  color: var(--text);
+  /* Tabular numerals everywhere: prices and positions are compared vertically
+     and proportional digits make a column of numbers look ragged. */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Minimum touch target, enforced globally. */
+button,
+a[role='button'],
+input,
+select {
+  min-height: 2.75rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

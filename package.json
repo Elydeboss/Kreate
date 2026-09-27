@@ -1,0 +1,35 @@
+{
+  "name": "pulse",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "node --import ./scripts/register-ts.mjs scripts/migrate.ts",
+    "verify": "node --import ./scripts/register-ts.mjs scripts/verify-resilience.ts",
+    "check": "npm run typecheck && npm run verify"
+  },
+  "dependencies": {
+    "@solana/wallet-standard": "^1.1.7",
+    "@solana/web3.js": "^1.99.0",
+    "@tanstack/react-query": "^5.104.0",
+    "@wallet-standard/app": "^1.1.1",
+    "next": "15.5.26",
+    "pg": "^8.23.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "tailwindcss": "^4.3.3",
+    "typescript": "5.9.3"
+  }
+}

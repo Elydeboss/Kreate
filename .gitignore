@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next
+/.next/
+/out/
+next-env.d.ts
+
+# production
+/build
+
+# env — NEVER commit. PANTA_API_KEY and the QuickNode token are live credentials.
+.env
+.env.local
+.env*.local
+
+# misc
+.DS_Store
+*.pem
+.vercel
+*.tsbuildinfo
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
