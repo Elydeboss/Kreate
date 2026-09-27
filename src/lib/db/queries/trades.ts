@@ -1,5 +1,6 @@
 import { db, type Db } from '@/lib/db'
 import type { QueryResultRow } from 'pg'
+import { appendEvents } from './events'
 import { toNum } from './values'
 
 /**
@@ -269,4 +270,138 @@ export async function tradeExists(signature: string, executor: Db = db): Promise
     [signature],
   )
   return row !== null
+}
+
+// ── Tape sync ───────────────────────────────────────────────────────────────
+
+export interface SyncResult {
+  /** Trades genuinely new to us. */
+  inserted: number
+  /** Ledger events appended. Equals `inserted` minus trades from unknown wallets. */
+  eventsAppended: number
+  /** Trades dropped because no Pulse user owns that wallet. See below. */
+  unattributed: number
+}
+
+/**
+ * Merge a fetched tape and append the matching ledger events — atomically.
+ *
+ * THIS FUNCTION IS WHY THE SCOREBOARD CANNOT BE FORGED. It is the only place a
+ * `trade.reported` event is created, and `actor_user_id` is resolved by looking
+ * up the trade's OWN `wallet` field — the one Panta reported — against `users`.
+ * It is never taken from the request that happened to trigger the sync. A caller
+ * who forges their identity header can therefore make their own fake bet
+ * invisible; they cannot make someone else's real bet appear, and they cannot
+ * invent a bet at all, because there has to be a real signature that Panta
+ * reported. See server/identity.ts for the rest of that argument.
+ *
+ * ⚠ Only genuinely new signatures become events. `upsertTrades` returns a true
+ * inserted count precisely so this can be enforced: since the ledger is
+ * append-only, re-syncing a market would otherwise append an event for every
+ * known trade on every poll, and `v_scoreboard` would count each bet once per
+ * poll forever.
+ *
+ * Trades from wallets with no `users` row are counted as unattributed and no
+ * event is written. That is a stranger trading on a public market, not a member
+ * of the session, and `v_scoreboard` filters null actors out anyway. Creating a
+ * user row for them would put an unclaimed identity into the member list.
+ */
+export async function syncMarketTape(
+  trades: readonly IncomingTrade[],
+  context: { pulseMarketId: string; sessionId: string | null },
+  executor: Db = db,
+): Promise<SyncResult> {
+  if (trades.length === 0) return { inserted: 0, eventsAppended: 0, unattributed: 0 }
+
+  // Which of these signatures are new? `upsertTrades` returns a count rather
+  // than a set, so resolve the set first. Re-checking inside the same
+  // transaction is safe because the tape and the ledger are written together.
+  const signatures = trades.map((t) => t.signature)
+  const alreadyKnown = await executor.query<{ signature: string }>(
+    `SELECT signature FROM market_trades WHERE signature = ANY($1::text[])`,
+    [signatures],
+  )
+  const known = new Set(alreadyKnown.map((row) => row.signature))
+  const fresh = trades.filter((t) => !known.has(t.signature))
+
+  const { inserted } = await upsertTrades(fresh, executor)
+  if (inserted === 0 || !context.sessionId) {
+    return { inserted, eventsAppended: 0, unattributed: 0 }
+  }
+  const sessionId = context.sessionId
+
+  // Resolve actors from the tape's own wallets, never from the caller.
+  const wallets = [...new Set(fresh.map((t) => t.wallet))]
+  const users = await executor.query<{ id: string; wallet: string }>(
+    `SELECT id, wallet FROM users WHERE wallet = ANY($1::text[])`,
+    [wallets],
+  )
+  const userByWallet = new Map(users.map((row) => [row.wallet, row.id]))
+
+  const events = fresh
+    .map((trade) => {
+      const actorUserId = userByWallet.get(trade.wallet)
+      if (!actorUserId) return null
+      const side = trade.side ?? deriveSide(trade.yesAmount, trade.noAmount)
+      // A trade with no derivable side cannot be scored, and `v_scoreboard` would
+      // ignore it anyway. Emitting it would be a row claiming to have been
+      // usable when it was not.
+      if (!side) return null
+
+      return {
+        sessionId,
+        type: 'trade.reported' as const,
+        actorUserId,
+        // Not optional. `v_scoreboard` filters on `market_id IS NOT NULL`, and it
+        // has to be the Pulse row so the outcome can be joined against.
+        marketId: context.pulseMarketId,
+        payload: {
+          side,
+          // `v_scoreboard` reads these two keys and casts them with a regex
+          // guard. Format matters: a float would serialise as 1e-7 and fail that
+          // regex, silently dropping the bet from the leaderboard.
+          amountUsdc: formatUsdc(Math.max(trade.yesAmount, trade.noAmount)),
+          shares: formatUsdc(trade.shares),
+          signature: trade.signature,
+        },
+      }
+    })
+    .filter((e): e is NonNullable<typeof e> => e !== null)
+
+  if (events.length > 0) await appendEvents(events, executor)
+
+  return {
+    inserted,
+    eventsAppended: events.length,
+    unattributed: fresh.length - events.length,
+  }
+}
+
+/**
+ * Which side a Panta trade was on, from the two legs.
+ *
+ * Panta's tape reports both legs as amounts rather than a side, so the side is
+ * whichever leg is non-zero. `tradeSide` in lib/panta/types.ts does the same for
+ * a raw API response; this copy takes a plain object so this module stays
+ * free of the Panta client.
+ */
+function deriveSide(yesAmount: number, noAmount: number): 'yes' | 'no' | null {
+  if (yesAmount > 0 && noAmount <= 0) return 'yes'
+  if (noAmount > 0 && yesAmount <= 0) return 'no'
+  // Both legs non-zero is a market-order fill that crossed. Treat it as
+  // unattributable rather than guessing — see the filter above.
+  return null
+}
+
+/**
+ * Format a USDC amount for a NUMERIC-cast JSONB payload.
+ *
+ * Plain decimal notation, no exponent, no thousands separator. `v_scoreboard`
+ * guards with `^[0-9]+(\.[0-9]+)?$`, so `1e-7` or `1,000` would be silently
+ * dropped. `toFixed(6)` matches the column's own scale and is enough precision
+ * for a position size.
+ */
+function formatUsdc(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0.000000'
+  return value.toFixed(6)
 }

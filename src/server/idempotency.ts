@@ -1,29 +1,26 @@
 import 'server-only'
 
 /**
- * Idempotency for BFF write routes.
+ * Replay protection for BFF write routes.
  *
- * WHY. Mobile networks drop requests in the exact place where a user is about to
+ * WHY. Mobile networks drop requests at exactly the moment a user is about to
  * tap again. Without replay protection, a double-tap — or a client that retries
  * because it never saw our response — creates two markets and charges two
  * creation fees. Panta is idempotent on `register`, `submit` and `trades`, but
  * Panta cannot help with the *quote* and *build* calls, and it cannot help with
  * our own writes. So we handle it here.
  *
- * THE CONTRACT:
- *   same key + same request hash -> replay the stored response, do not re-execute
- *   same key + different hash    -> 409, the client reused a key for a new intent
- *   no key                       -> reject, writes require one
+ * THE ORDERING IS THE WHOLE POINT. The key is claimed BEFORE the handler runs.
+ * Execute first and record after, and a crash in between leaves a completed side
+ * effect with no key row — so the retry does it again, and for a market create
+ * that is a second real fee. Claiming first means a crash leaves an in-progress
+ * row, which `reapStaleKeys` reclaims.
  *
- * THE ORDERING MATTERS. The key row is inserted BEFORE the side effect, inside a
- * transaction. If we executed first and recorded after, a crash in between would
- * leave a completed side effect with no key, and the retry would do it again.
- * Inserting first means a crash leaves an in-progress row, which the reaper
- * below reclaims.
+ * All SQL lives in lib/db/queries/idempotency.ts. This module is the protocol.
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { query, queryOne } from '@/lib/db'
+import { claimKey, completeKey, findKey, releaseKey } from '@/lib/db/queries/idempotency'
 
 export class IdempotencyError extends Error {
   readonly status: number
@@ -54,29 +51,34 @@ function stableStringify(value: unknown): string {
   return `{${entries.join(',')}}`
 }
 
-type Outcome<T> =
-  | { kind: 'replay'; record: IdempotentRecord<T> }
-  | { kind: 'conflict' }
-  | { kind: 'execute' }
+/** The `Idempotency-Key` header name. */
+export const IDEMPOTENCY_HEADER = 'idempotency-key'
+
+/** A fresh key for a fresh user intent. The client mints this before it taps. */
+export function newIdempotencyKey(): string {
+  return randomUUID()
+}
+
+export interface IdempotentResult<T> {
+  status: number
+  response: T
+  /** True when the stored response was replayed and the handler never ran. */
+  replayed: boolean
+}
 
 /**
- * Claim, execute, and record — the one function routes should use.
+ * Claim, execute, and record.
  *
  *   same key + same body  -> replay the stored response, handler never runs
  *   same key + diff body  -> 409
  *   no key                 -> 400
- *
- * The key is claimed BEFORE the handler runs, so a crash cannot leave a
- * completed side effect unrecorded. If the handler throws, the key is released
- * so a genuine retry can proceed — otherwise a transient Panta failure would be
- * permanent for that user intent.
  */
 export async function withIdempotency<T>(
   key: string | null | undefined,
   route: string,
   body: unknown,
-  handler: () => Promise<{ status: number; response: T }>,
-): Promise<{ status: number; response: T; replayed: boolean }> {
+  handler: () => Promise<IdempotentRecord<T>>,
+): Promise<IdempotentResult<T>> {
   if (!key) {
     throw new IdempotencyError('Idempotency-Key header is required on write routes', 400)
   }
@@ -86,13 +88,9 @@ export async function withIdempotency<T>(
 
   const requestHash = hashRequest(body)
 
-  const existing = await queryOne<{ request_hash: string; status: number; response: unknown }>(
-    'SELECT request_hash, status, response FROM idempotency_keys WHERE key = $1',
-    [key],
-  )
-
+  const existing = await findKey(key)
   if (existing) {
-    if (existing.request_hash !== requestHash) {
+    if (existing.requestHash !== requestHash) {
       throw new IdempotencyError(
         'Idempotency-Key was already used for a different request body',
         409,
@@ -103,43 +101,31 @@ export async function withIdempotency<T>(
     }
   }
 
-  // Claim before executing. RETURNING tells us whether we won the race.
-  const claimed = await query<{ key: string }>(
-    `INSERT INTO idempotency_keys (key, route, request_hash, status, response)
-     VALUES ($1, $2, $3, 0, NULL)
-     ON CONFLICT (key) DO NOTHING
-     RETURNING key`,
-    [key, route, requestHash],
-  )
-
-  if (claimed.length === 0) {
-    // Lost the race to a concurrent request with the same key. Wait for its
+  const won = await claimKey(key, route, requestHash)
+  if (!won) {
+    // A concurrent request with the same key is already running. Wait for its
     // result rather than executing the side effect a second time.
-    const raced = await waitForCompletion<T>(key, requestHash, route)
-    return { ...raced, replayed: true }
+    return { ...(await waitForCompletion<T>(key, requestHash, route)), replayed: true }
   }
 
   try {
     const { status, response } = await handler()
-    await query('UPDATE idempotency_keys SET status = $2, response = $3 WHERE key = $1', [
-      key,
-      status,
-      JSON.stringify(response ?? null),
-    ])
+    await completeKey(key, status, response)
     return { status, response, replayed: false }
   } catch (err) {
-    // Release the key so a genuine retry can proceed. Leaving it claimed would
-    // make a transient upstream failure permanent for this intent.
-    await query('DELETE FROM idempotency_keys WHERE key = $1 AND response IS NULL', [key]).catch(
-      (cleanupErr) => console.error('[idempotency] failed to release key', cleanupErr),
-    )
+    // Release so a genuine retry can proceed. Leaving the key claimed would make
+    // a transient Panta 5xx permanent for that user intent.
+    await releaseKey(key).catch((cleanupErr) => console.error('[idempotency] release failed', cleanupErr))
     throw err
   }
 }
 
 /**
  * Poll for the winning request's result after losing an insert race.
- * Bounded, because the winner is doing network work and will finish.
+ *
+ * Bounded, because the winner is doing network work and will finish. On timeout
+ * the caller is told to retry with the SAME key — which is safe precisely
+ * because the claim is already in place, so a retry waits rather than re-executes.
  */
 async function waitForCompletion<T>(
   key: string,
@@ -150,12 +136,9 @@ async function waitForCompletion<T>(
 ): Promise<IdempotentRecord<T>> {
   for (let i = 0; i < attempts; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
-    const row = await queryOne<{ request_hash: string; status: number; response: unknown }>(
-      'SELECT request_hash, status, response FROM idempotency_keys WHERE key = $1',
-      [key],
-    )
+    const row = await findKey(key)
     if (!row) continue
-    if (row.request_hash !== requestHash) {
+    if (row.requestHash !== requestHash) {
       throw new IdempotencyError(
         'Idempotency-Key was already used for a different request body',
         409,
@@ -165,7 +148,6 @@ async function waitForCompletion<T>(
       return { status: row.status, response: row.response as T }
     }
   }
-  // The winner is still working. Tell the caller to retry with the SAME key.
   throw new IdempotencyError(
     `A concurrent request with this Idempotency-Key is still in flight on ${route}. ` +
       `Retry with the same key.`,
@@ -173,24 +155,4 @@ async function waitForCompletion<T>(
   )
 }
 
-/** Fresh key for a fresh user intent. */
-export function newIdempotencyKey(): string {
-  return randomUUID()
-}
-
-/**
- * Reap in-progress keys older than `olderThanMinutes`.
- *
- * Schedule this on Vercel Cron (daily is fine). Without it, a crash during a
- * write leaves rows at status 0 forever and the table grows without bound.
- */
-export async function reapStaleKeys(olderThanMinutes = 60): Promise<number> {
-  const rows = await query<{ key: string }>(
-    `DELETE FROM idempotency_keys
-      WHERE response IS NULL
-        AND created_at < now() - ($1 || ' minutes')::interval
-      RETURNING key`,
-    [String(olderThanMinutes)],
-  )
-  return rows.length
-}
+export { reapStaleKeys } from '@/lib/db/queries/idempotency'

@@ -143,7 +143,12 @@ export interface UseWalletResult {
   connecting: boolean
   /** Populated when the wallet threw something that was not a user dismissal. */
   error: string | null
-  connect: (target: DiscoveredWallet) => Promise<void>
+  /**
+   * Connect a wallet. Resolves true when a usable account came back, false on
+   * failure or dismissal — so a caller can keep a sheet open rather than closing
+   * it on a rejection the user never saw the cause of.
+   */
+  connect: (target: DiscoveredWallet, options?: { silent?: boolean }) => Promise<boolean>
   disconnect: () => void
 }
 
@@ -193,9 +198,10 @@ export function useWallet(rpcUrl: string): UseWalletResult {
     }
   }, [])
 
-  const connect = useCallback(async (target: DiscoveredWallet) => {
+  const connect = useCallback(async (target: DiscoveredWallet, options?: { silent?: boolean }): Promise<boolean> => {
+    const silent = options?.silent === true
     setConnecting(true)
-    setError(null)
+    if (!silent) setError(null)
     try {
       const connectFeature = target.wallet.features.connect
       if (!connectFeature) {
@@ -225,13 +231,15 @@ export function useWallet(rpcUrl: string): UseWalletResult {
         icon: account.icon ?? target.icon,
         signer: toSigner(target.wallet, publicKey),
       })
+      return true
     } catch (err) {
       // The overwhelmingly common cause is the user closing the wallet's own
       // modal. That is not an error worth shouting about.
       const message = err instanceof Error ? err.message : 'Could not connect that wallet.'
       const dismissed = /reject|cancel|denied|declined|user|closed/i.test(message)
-      setError(dismissed ? null : message)
+      setError(dismissed || silent ? null : message)
       setConnected(null)
+      return false
     } finally {
       setConnecting(false)
     }
