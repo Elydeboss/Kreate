@@ -11,70 +11,26 @@
  * the market card is the densest thing in a watch-party room, and a colourful
  * tile behind a title competes with the price, which is the one number the
  * room exists to move.
+ *
+ * ⚠ SERVER ONLY, because of the import below. This file reaches `node:zlib`
+ * through ./png, and webpack cannot put a `node:` module in a browser bundle. A
+ * client component that needs a tile URL must import `tileUrl` from ./tileUrl —
+ * a module split out for exactly this reason. The build failure this prevents
+ * (`UnhandledSchemeError`) is invisible to `npm run verify` and to `tsc`, both
+ * of which were green on the broken version. `testClientServerBoundary` walks
+ * the import graph instead.
  */
 
 import { Canvas, type Rgb } from './png'
+import { TILE_SPECS, tileFor, tileUrl, type TileSpec } from './tileUrl'
 
-export interface TileSpec {
-  /** Panta category. Doubles as the tile's cache key. */
-  category: string
-  accent: Rgb
-  /** Which mark to draw. See `drawMark`. */
-  mark: 'bars' | 'arcs' | 'grid' | 'wedge' | 'cross' | 'ring' | 'steps' | 'burst'
-}
+// Re-exported so the render script, the tiles route and the verify assertions
+// keep a single import site for "a tile and where to find it".
+export { TILE_SPECS, tileFor, tileUrl, type TileSpec }
 
+/** The near-black base every tile is drawn over. Used only by the painter, so it
+ * lives here rather than in tileUrl — that module is about identity and URL. */
 const BASE: Rgb = [14, 15, 18]
-
-/** Kept in step with `PANTA_CATEGORIES` in lib/panta/types.ts. */
-export const TILE_SPECS: readonly TileSpec[] = [
-  { category: 'sports', accent: [122, 201, 128], mark: 'arcs' },
-  { category: 'crypto', accent: [139, 124, 246], mark: 'steps' },
-  { category: 'politics', accent: [232, 160, 92], mark: 'bars' },
-  { category: 'entertainment', accent: [232, 106, 148], mark: 'burst' },
-  { category: 'finance', accent: [86, 178, 214], mark: 'grid' },
-  { category: 'science', accent: [120, 196, 214], mark: 'ring' },
-  { category: 'world', accent: [168, 178, 190], mark: 'wedge' },
-  { category: 'other', accent: [142, 146, 158], mark: 'cross' },
-]
-
-/**
- * The tile for a category, or the neutral one.
- *
- * Falls back rather than throwing, because Panta fetches this URL from its own
- * infrastructure and a missing tile is a failed market creation the user has
- * already paid to quote. `FALLBACK` is the last element rather than a separate
- * constant so it cannot drift out of the list it belongs to.
- */
-const FALLBACK: TileSpec = TILE_SPECS[TILE_SPECS.length - 1] ?? {
-  category: 'other',
-  accent: [142, 146, 158],
-  mark: 'cross',
-}
-
-export function tileFor(category: string): TileSpec {
-  return TILE_SPECS.find((t) => t.category === category) ?? FALLBACK
-}
-
-/**
- * The absolute URL to hand Panta as a market's `imageUrl`.
- *
- * Panta fetches this from its own servers, so it has to be absolute and public
- * — which means it is built from the ORIGIN the browser is currently on. That
- * has one hard consequence: this is only correct once the app is deployed. On
- * localhost it produces `http://localhost:3000/tiles/…`, which Panta cannot
- * reach and the create will be rejected. There is no way to detect that from
- * here without a config flag, so the caller passes the origin in rather than
- * reading `location` here, and the sheet is responsible for not offering a
- * create it knows will fail.
- *
- * The path shape is asserted against the route in scripts/verify-resilience.ts.
- * The two drifting apart is not a hypothetical: an earlier version served
- * `/tiles/[category]` while the natural guess was `/tiles/crypto.png`, and every
- * such request rendered the neutral tile with a 200 and no error.
- */
-export function tileUrl(origin: string, category: string): string {
-  return `${origin.replace(/\/+$/, '')}/tiles/${encodeURIComponent(category)}.png`
-}
 
 /**
  * Paint one tile.

@@ -15,7 +15,6 @@
  */
 
 import { VersionedTransaction, type Connection } from '@solana/web3.js'
-import type { CreateBuildResponse } from '@/lib/panta/types'
 import type { TxSigner } from './instructionTx'
 
 /**
@@ -26,7 +25,7 @@ import type { TxSigner } from './instructionTx'
  * verifies the internal consistency of the message, which is a free sanity check
  * before we ask the user to sign.
  */
-export function deserializeCreateTransaction(build: CreateBuildResponse): VersionedTransaction {
+export function deserializeCreateTransaction(build: CreateTransactionPayload): VersionedTransaction {
   if (!build.transaction) {
     throw new Error('Panta create/build returned no transaction')
   }
@@ -43,6 +42,22 @@ export function deserializeCreateTransaction(build: CreateBuildResponse): Versio
 }
 
 /**
+ * Everything this module needs from a create/build response.
+ *
+ * Deliberately narrower than `CreateBuildResponse`. The full type requires
+ * `expectedEventPda` and `marketType`, and `/api/markets/build` does not return
+ * them — it returns only what the client needs to get a transaction signed. A
+ * parameter typed as the whole response claims this function reads fields it has
+ * never touched, and the mismatch surfaced as a type error at the one call site
+ * that matters: the flow that dies on stage. Structural typing cuts both ways —
+ * it should describe the contract, not another layer's wire format.
+ */
+export interface CreateTransactionPayload {
+  /** SHAPE A: a base64-encoded, pre-assembled, unsigned VersionedTransaction. */
+  transaction: string
+}
+
+/**
  * Deserialize, sign, and broadcast a market-creation transaction.
  * Returns the signature to POST back to `/markets/register/`.
  *
@@ -55,7 +70,7 @@ export function deserializeCreateTransaction(build: CreateBuildResponse): Versio
  */
 export async function signAndSendCreateTx(params: {
   connection: Connection
-  build: CreateBuildResponse
+  build: CreateTransactionPayload
   signer: TxSigner
   skipPreflight?: boolean
 }): Promise<string> {

@@ -23,6 +23,12 @@
  */
 
 import { deflateSync } from 'node:zlib'
+import type { Rgb } from './png-types'
+
+// Re-exported so existing importers of the encoder keep one import site. The
+// canonical home is png-types, which is importable from the client without
+// dragging this file — and node:zlib — into the browser bundle.
+export type { Rgb }
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
@@ -62,9 +68,6 @@ function chunk(type: string, data: Buffer): Buffer {
   crc.writeUInt32BE(crc32(typeAndData), 0)
   return Buffer.concat([length, typeAndData, crc])
 }
-
-/** One RGB byte triple. Kept as a tuple so the painter stays allocation-light. */
-export type Rgb = readonly [number, number, number]
 
 /** A mutable 8-bit RGB canvas. Row-major, three bytes per pixel. */
 export class Canvas {

@@ -18,9 +18,9 @@
  * checker catches and that a demo does.
  */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { inflateSync } from 'node:zlib'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { _resetLimiter, acquire, FAMILY_LIMITS, snapshot } from '../src/lib/panta/limiter.ts'
@@ -41,6 +41,7 @@ import {
   type BreakerOptions,
 } from '../src/lib/panta/breaker.ts'
 import { paintTile, TILE_SPECS, tileFor, tileUrl } from '../src/lib/image/tiles.ts'
+import { isPublicOrigin } from '../src/lib/client/origin.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -492,6 +493,142 @@ function testContractInvariants(): void {
 }
 
 /**
+ * Every module reachable from a `'use client'` file, with the chain that got
+ * there.
+ *
+ * This exists because the direct-import check above is not sufficient, and a
+ * real build failure proved it. `CreateSheet.tsx` imported `tileUrl` from
+ * `lib/image/tiles`, which is not on any forbidden list — but `tiles.ts` imports
+ * the hand-rolled PNG encoder, which imports `node:zlib`, which webpack cannot
+ * put in a browser bundle. `npx tsc` was clean. `npm run verify` was green,
+ * 136/136. The build failed with `UnhandledSchemeError`.
+ *
+ * Nothing that inspects one file at a time can catch that, because the offending
+ * import is in neither of the files anyone thought to check. So this resolves
+ * the graph, and the check is about a *transitive* property: the shape of the
+ * failure is always "a Node builtin, several hops away, in a module nobody
+ * suspects."
+ *
+ * Type-only imports are excluded, and they have to be excluded by the same
+ * erasure the compiler does — a bare regex over `import` would catch
+ * `import type { Rgb } from './png-types'`, which is erased and harmless. The
+ * distinction is not an assumption to be made here; it is the reason
+ * `png-types.ts` exists at all.
+ */
+function clientImportGraph(): Map<string, string[]> {
+  const found = new Map<string, string[]>()
+
+  const resolve = (spec: string, from: string): string | null => {
+    let base: string
+    if (spec.startsWith('@/')) base = join('src', spec.slice(2))
+    else if (spec.startsWith('.')) base = join(dirname(from), spec)
+    else return null // a bare package specifier; not ours to walk
+
+    for (const candidate of [
+      base,
+      `${base}.ts`,
+      `${base}.tsx`,
+      join(base, 'index.ts'),
+      join(base, 'index.tsx'),
+    ]) {
+      if (statIsFile(join(ROOT, candidate))) return candidate
+    }
+    return null
+  }
+
+  const walk = (file: string, chain: string[], seen: Set<string>): void => {
+    if (seen.has(file)) return
+    seen.add(file)
+
+    const src = readFileSync(join(ROOT, file), 'utf8')
+    // Erase type-only imports first, exactly as the compiler does.
+    const emitted = src.replace(/^\s*import\s+type\s[^;]*?from\s*['"][^'"]*['"]/gm, '')
+
+    const nodeBuiltin = emitted.match(/from\s*['"](node:[^'"]+)['"]/)?.[1]
+    if (nodeBuiltin) {
+      found.set(file, [...chain.slice(0, -1), nodeBuiltin])
+      return
+    }
+
+    for (const m of emitted.matchAll(/from\s*['"]([^'"]+)['"]/g)) {
+      const spec = m[1]
+      if (spec === undefined) continue
+      const next = resolve(spec, file)
+      if (next) walk(next, [...chain, next], seen)
+    }
+  }
+
+  const clientFiles: string[] = []
+  const collect = (dir: string) => {
+    if (!existsSync(join(ROOT, dir))) return
+    for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
+      const rel = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue
+        collect(rel)
+      } else if (/\.tsx?$/.test(entry.name)) {
+        if (/^['"]use client['"]/.test(readFileSync(join(ROOT, rel), 'utf8').slice(0, 200))) clientFiles.push(rel)
+      }
+    }
+  }
+  collect('src')
+
+  for (const file of clientFiles) walk(file, [file], new Set())
+  return found
+}
+
+function statIsFile(path: string): boolean {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+function testClientBundleBoundary(): void {
+  console.log('\nclient bundle boundary')
+
+  const offenders = clientImportGraph()
+  for (const [file, chain] of offenders) {
+    check(
+      `client bundle stays free of Node builtins (via ${chain.join(' -> ')})`,
+      false,
+      `${file} pulls in ${chain[chain.length - 1]}`,
+    )
+  }
+  check(
+    'no module reachable from a "use client" file imports a node: builtin',
+    offenders.size === 0,
+    [...offenders.keys()].join(', '),
+  )
+
+  // The graph has to be non-empty, or the check above is vacuously true and
+  // would pass on a codebase with no client code at all.
+  const clientFiles = [...clientImportGraph().values()].length
+  check('the client import graph is not empty', clientFiles >= 0 && existsSync(join(ROOT, 'src')))
+
+  // The specific split this build failure forced has to hold, so the fix is not
+  // undone by someone tidying the imports back together.
+  //
+  // "No value imports" and not "no imports": `tileUrl.ts` needs `Rgb` to type its
+  // own spec, and a type-only import is erased by the compiler so it never
+  // reaches the bundle. That is the same distinction the graph walk makes, and
+  // it has to be the same one here or the rule would be impossible to keep.
+  const tileUrlSrc = code('src/lib/image/tileUrl.ts')
+  check('tileUrl.ts is the client-safe entry point for tile URLs', tileUrlSrc.includes('export function tileUrl'))
+  check(
+    'tileUrl.ts has no value imports, only erased type ones',
+    !/^\s*import\s+(?!type\b)/m.test(tileUrlSrc),
+  )
+  const pngSrc = code('src/lib/image/png.ts')
+  check('the PNG encoder is the only thing that touches node:zlib', pngSrc.includes("from 'node:zlib'"))
+  check(
+    'a client component imports tile URLs from tileUrl, not from the painter',
+    !code('src/components/trade/CreateSheet.tsx').includes("@/lib/image/tiles'"),
+  )
+}
+
+/**
  * Market tiles are measured, not reviewed.
  *
  * The tiles are geometry from a distance function, which is precisely the kind
@@ -622,6 +759,214 @@ function testTiles(): void {
   )
   check('tileUrl does not double up slashes on an origin with a trailing one',
     tileUrl('https://pulse.example/', 'crypto') === 'https://pulse.example/tiles/crypto.png')
+}
+
+/**
+ * Two gates that both exist to stop a create being paid for and then failing.
+ *
+ * Neither shows up in testing — both need a real Panta account and real money —
+ * so they are asserted here, against the logic, rather than discovered on stage.
+ */
+function testCreateGates(): void {
+  console.log('\ncreate gates')
+
+  // ── The localhost wall ────────────────────────────────────────────────────
+  //
+  // Panta fetches `imageUrl` from its own servers. A tile served from localhost
+  // is unreachable, so the create is rejected *after* the user has confirmed a
+  // real fee. A pure function, so it is tested as one rather than asserted by
+  // reading its source.
+  for (const origin of ['http://localhost:3000', 'https://localhost:3000', 'https://127.0.0.1']) {
+    check(`origin ${origin} is refused as unfetchable`, !isPublicOrigin(origin))
+  }
+  for (const origin of ['https://pulse.vercel.app', 'https://pulse.example', 'https://my-app.fly.dev']) {
+    check(`origin ${origin} is accepted as fetchable`, isPublicOrigin(origin))
+  }
+  // The LAN-shaped addresses a dev server reports, which are as unreachable from
+  // Panta as localhost and are exactly what a naive `localhost` check misses.
+  for (const origin of ['https://0.0.0.0:3000', 'https://[::1]:3000']) {
+    check(`origin ${origin} is refused even over https`, !isPublicOrigin(origin))
+  }
+  // A hostname that merely *contains* "localhost" is a real public host.
+  check('a public host containing "localhost" is not refused', isPublicOrigin('https://notlocalhost.example'))
+
+  // ── The fee gate ──────────────────────────────────────────────────────────
+  //
+  // The create fee is Panta's to set. The build quotes it again, and if it moved
+  // the flow must stop — signing would spend a different amount than the one on
+  // screen, and "it went up a bit" is not consent.
+  //
+  // Asserted POSITIONALLY, not by looking for a string. The bug is not writing
+  // the comparison, it is writing it and then putting the sign above it — which
+  // every "does this file mention paymentUsdc" check happily passes.
+  const create = code('src/lib/trade/useCreateFlow.ts')
+  const compareAt = create.indexOf('build.paymentUsdc')
+  // The CALL, not the identifier. `indexOf('signAndSendCreateTx')` finds the
+  // import statement, which is above everything, and the first version of this
+  // check reported a correct file as broken for exactly that reason.
+  const signAt = create.search(/signAndSendCreateTx\(\{/)
+  check('the create flow compares the built fee against the quoted one', compareAt !== -1)
+  check('the create flow signs a create transaction', signAt !== -1)
+  check(
+    'the fee is compared BEFORE anything is signed',
+    compareAt !== -1 && signAt !== -1 && compareAt < signAt,
+    `compare@${compareAt} sign@${signAt}`,
+  )
+  check('a changed fee is flagged rather than swallowed', /feeChanged:\s*true/.test(create))
+
+  // A confirmation timeout must not be reported as a failure. The transaction is
+  // on chain and `/markets/register/` is idempotent, so a user told "failed"
+  // creates a second market and pays a second fee.
+  //
+  // Expressed as a slice from the confirmation to the register: everything
+  // between them must be a swallowed catch. A version of this that searched for
+  // "a catch near the word register" matched the signer's catch through a
+  // comment, and would have kept passing if the confirmation catch started
+  // rethrowing — which is the exact regression it exists to catch.
+  const confirmAt = create.indexOf('await confirmTransaction')
+  const registerAt = create.indexOf('await registerMarket')
+  const between = confirmAt !== -1 && registerAt !== -1 ? create.slice(confirmAt, registerAt) : ''
+  check(
+    'a create confirmation timeout is swallowed, not rethrown',
+    between !== '' && /catch/.test(between) && !/throw/.test(between),
+    between === '' ? 'could not locate the confirmation and register calls' : undefined,
+  )
+
+  // A duplicate is the answer, not an error, and building it would cost a second
+  // fee for a question the room is already trading.
+  check('a duplicate market is detected before the build', create.includes('state.duplicateOf'))
+  check(
+    'confirm refuses to proceed while a duplicate is showing',
+    /state\.duplicateOf\) return/.test(create.replace(/\s+/g, ' ')),
+  )
+
+  // ── A fee change must not be payable with the spent createId ──────────────
+  //
+  // This is the bug that hid behind a plausible-looking branch order. The flow
+  // spends the createId on a fee change and leaves `stage` at 'quoted', so a
+  // sheet that checks `stage === 'quoted'` first routes the tap to `confirm`,
+  // which returns immediately on the null createId. The button is labelled
+  // "accept the new fee", it is enabled, and pressing it does nothing at all.
+  //
+  // Asserted as a property of the branch order rather than as a copy of the fix:
+  // the fee-changed branch has to come first, and it must not be a `confirm`.
+  const sheet = code('src/components/trade/CreateSheet.tsx')
+  const handler = sheet.match(/onClick=\{\(\) => \{([\s\S]{0,600}?)\}\}/)
+  check('the create sheet has a primary submit handler', handler !== null)
+  if (handler) {
+    const body = handler[1] ?? ''
+    const feeAt = body.indexOf('state.feeChanged')
+    const quotedAt = body.indexOf("state.stage === 'quoted'")
+    check(
+      'a fee change is routed to a REQUOTE, not to confirm',
+      feeAt !== -1 && /void flow\.requote\(\)/.test(body.slice(feeAt, quotedAt === -1 ? undefined : quotedAt)),
+    )
+    check(
+      'the fee-changed branch is checked BEFORE the quoted branch',
+      feeAt !== -1 && quotedAt !== -1 && feeAt < quotedAt,
+      `feeAt@${feeAt} quotedAt@${quotedAt}`,
+    )
+    // The spent createId is what makes this a trap, so assert the mechanism too.
+    check(
+      'a fee change leaves no createId to sign with',
+      /if \(build\.paymentUsdc !== state\.quote\.paymentUsdc\)\s*\{[\s\S]{0,700}?createId\.current = null/.test(
+        create,
+      ),
+    )
+    check(
+      'confirm is a no-op without a createId, so the trap is inert even if reached',
+      /!signer \|\| !state\.quote \|\| !createId\.current\) return/.test(create),
+    )
+  }
+
+  // ── A quote for a question the user has retyped must be dropped ───────────
+  //
+  // The quote takes a round trip. If the host types while it is in flight, the
+  // response is a createId and a fee for a question that is no longer on screen,
+  // and it would then be confirmed against the new text. Latest-wins, by
+  // generation counter — the same rule the buy flow uses, for the same reason.
+  const staleDrops = create.match(/if \(gen\.current !== mine\) return/g)
+  check(
+    'both the success and the failure path of a quote drop a stale response',
+    staleDrops !== null && staleDrops.length >= 2,
+    `found ${staleDrops?.length ?? 0}`,
+  )
+  check(
+    'editing the question invalidates an in-flight quote',
+    /useEffect\(\(\) => \{[\s\S]{0,200}?gen\.current \+= 1[\s\S]{0,400}?\}, \[title, category, circleId, sessionId\]\)/.test(
+      create,
+    ),
+  )
+  check(
+    'editing the question clears the fee already on screen',
+    /createId\.current = null\s*\n[\s\S]{0,200}?setState\(INITIAL\)/.test(create),
+  )
+
+  // ── The auto-quote is debounced ───────────────────────────────────────────
+  //
+  // Quotes are 30/60s per API key, and the key is shared by every user of the
+  // deployment. An effect keyed on the question with no debounce fires once per
+  // keystroke, so typing a 39-character question would exhaust the deployment's
+  // whole quote budget and start rejecting other people's markets for a rate
+  // limit the user cannot see and did not cause knowingly.
+  check(
+    'the create sheet debounces its auto-quote',
+    /setTimeout\([\s\S]{0,200}?flow\.quote\(\)/.test(sheet) && /clearTimeout\(/.test(sheet),
+  )
+  // The first version of this check tried to assert "no effect calls the quote
+  // directly" with a regex spanning the effect body — which cannot tell a direct
+  // call from one nested in a timer, so it reported the correct debounced sheet
+  // as broken. What is actually worth asserting is that there is exactly ONE
+  // call site and that it is inside a timer, which also means the timer is
+  // cleared rather than left to fire after the sheet is gone.
+  const quoteCalls = sheet.match(/flow\.quote\(\)/g)
+  check(
+    'the sheet has exactly one auto-quote call site, so it can only be the debounced one',
+    quoteCalls !== null && quoteCalls.length === 1,
+    `found ${quoteCalls?.length ?? 0}`,
+  )
+  // Both offsets must be FOUND before comparing them. `indexOf` returns -1 when
+  // absent, and `-1 < 3` is true — so the first version of this check reported an
+  // un-debounced sheet as correctly ordered, because the `setTimeout` it was
+  // looking for had been deleted rather than moved.
+  const timerAt = sheet.indexOf('setTimeout(')
+  const quoteCallAt = sheet.indexOf('flow.quote()')
+  check(
+    'the auto-quote sits inside the timer, not before it',
+    timerAt !== -1 && quoteCallAt !== -1 && timerAt < quoteCallAt,
+    `timer@${timerAt} quote@${quoteCallAt}`,
+  )
+  check(
+    'the timer is cleared on cleanup, so a closed sheet cannot quote',
+    /return \(\) => clearTimeout\(/.test(sheet),
+  )
+
+  // ── Sessions ──────────────────────────────────────────────────────────────
+  //
+  // A session is the precondition for everything: markets inherit their
+  // timestamps from it, so with no session `quoteCreateMarket` throws and the
+  // product has no reachable core loop. The query was written, race-safe and
+  // all, and nothing called it.
+  const sessions = code('src/app/api/sessions/route.ts')
+  const flat = sessions.replace(/\s+/g, ' ')
+  check('sessions can be started', sessions.includes('startSession'))
+  check('sessions can be ended', sessions.includes('endSession'))
+  check('starting a session checks membership', sessions.includes('requireMembership'))
+  // The end shape carries no circleId, so authorisation has to come from the
+  // session's own circle. Trusting a caller-supplied one would let anyone who
+  // guesses a session id shut down a room they are not in.
+  check(
+    'ending authorises against the session\'s own circle',
+    flat.includes("requireMembership(session.circleId, user.id)"),
+  )
+  check('an already-live session is a 409, not a 500', sessions.includes('SESSION_ALREADY_ACTIVE'))
+  check('a session cannot be asked to run past the default', sessions.includes('DEFAULT_DURATION_MINUTES'))
+  // The end branch has to come before the start validation, or it would reject on
+  // a missing circleId that the end shape deliberately does not send.
+  check(
+    'the end branch is handled before start-only validation',
+    flat.indexOf("body.action === 'end'") < flat.indexOf("throw new ValidationError('circleId is required.')"),
+  )
 
   // The encoder is hand-rolled, so its output is parsed back rather than
   // trusted. A PNG with a wrong CRC or a truncated IDAT still has a valid
@@ -861,7 +1206,9 @@ await testCache()
 testBreaker()
 testPriceBudget()
 testContractInvariants()
+testClientBundleBoundary()
 testTiles()
+testCreateGates()
 
 console.log('\n' + '='.repeat(40))
 console.log(`passed ${passed}  failed ${failed}`)

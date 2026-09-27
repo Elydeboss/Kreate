@@ -150,6 +150,37 @@ export function joinCircle(wallet: string, code: string, idempotencyKey: string)
   )
 }
 
+// ── Sessions ──────────────────────────────────────────────────────────────────
+
+export interface Session {
+  id: string
+  circleId: string
+  title: string
+  streamUrl: string | null
+  status: 'active' | 'ended'
+  startedAt: string
+  endsAt: string
+  endedAt: string | null
+}
+
+export function startSession(
+  wallet: string,
+  body: { circleId: string; title: string; durationMinutes?: number },
+  idempotencyKey: string,
+) {
+  return apiPost<{ session: Session }>('/api/sessions', wallet, body, idempotencyKey)
+}
+
+/** Safe to call twice. Ending an ended session returns the same session, not a 404. */
+export function endSession(wallet: string, sessionId: string, idempotencyKey: string) {
+  return apiPost<{ session: Session }>(
+    '/api/sessions',
+    wallet,
+    { sessionId, action: 'end' },
+    idempotencyKey,
+  )
+}
+
 // ── Market creation ──────────────────────────────────────────────────────────
 
 /**
@@ -178,8 +209,31 @@ export interface CreateBuild {
   expiresAt: string | null
 }
 
+/**
+ * The body `POST /api/markets/quote` takes.
+ *
+ * NOT `CreateQuoteRequest`. That is the shape Panta takes, and the two differ in
+ * the way that matters: Panta's needs `wallet`, `question` (with the session
+ * nonce baked in), `marketType`, `eventInProgress` and three timestamps — all of
+ * which the server derives and none of which the client may choose. This is the
+ * subset a person actually fills in. Typing the client call as Panta's type made
+ * the compiler demand fields the browser has no business knowing.
+ */
+export interface CreateMarketRequest {
+  circleId: string
+  sessionId: string
+  /** The clean question, as typed. The room displays this; Panta sees a nonce. */
+  title: string
+  category: string
+  resolutionRule: string
+  sourcesOfTruth: string[]
+  imageUrl: string
+  /** Mints a second market AND a second fee. Opt-in by name, never inferred. */
+  allowDuplicate?: boolean
+}
+
 /** Note: no idempotency key is required, and none is accepted. */
-export function quoteMarket(wallet: string, body: CreateQuoteRequest, idempotencyKey: string) {
+export function quoteMarket(wallet: string, body: CreateMarketRequest, idempotencyKey: string) {
   return apiPost<CreateQuote>('/api/markets/quote', wallet, body, idempotencyKey)
 }
 

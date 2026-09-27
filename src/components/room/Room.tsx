@@ -14,9 +14,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { StalenessStamp, PoweredByPanta, TxLink } from '@/components/compliance/PantaCompliance'
 import { BuySheet } from '@/components/trade/BuySheet'
+import { SessionBar } from '@/components/room/SessionBar'
+import { CreateSheet } from '@/components/trade/CreateSheet'
 import { apiGet, ApiError } from '@/lib/client/api'
 import { clientConfig } from '@/lib/client/config'
-import { asPrice, memberName, priceLabel, usdc, usdcSigned, usdcCompact, countdown, type PantaPrice } from '@/lib/format'
+import { asPrice, memberName, priceLabel, usdc, usdcSigned, usdcCompact, type PantaPrice } from '@/lib/format'
 import { useConnection } from '@/lib/wallet/useWallet'
 import { useWalletContext } from '@/lib/wallet/WalletProvider'
 
@@ -66,7 +68,11 @@ interface ScoreRow {
 
 interface RoomSnapshot {
   circle: { id: string; code: string; name: string }
-  session: { id: string; title: string; startedAt: string; endsAt: string; status: string } | null
+  // `status` is the union the server actually returns, not `string`. Widening it
+  // to `string` here pushed the narrowing into SessionBar's props, where it had
+  // to be re-asserted — and a status that is `string` at the boundary is a status
+  // nobody checked.
+  session: { id: string; title: string; startedAt: string; endsAt: string; status: 'active' | 'ended' } | null
   members: Member[]
   memberCount: number
   markets: Market[]
@@ -96,7 +102,14 @@ function pollInterval(ttlMs: number): number {
   return Math.max(3_000, Math.min(20_000, Math.round(ttlMs * 1.5)))
 }
 
-export function Room({ circleId }: { circleId: string }) {
+export function Room({
+  circleId,
+  categories,
+}: {
+  circleId: string
+  /** From the server, so there is one list. See app/c/[circleId]/page.tsx. */
+  categories: readonly string[]
+}) {
   const { connected } = useWalletContext()
   const connection = useConnection(clientConfig.rpcUrl)
   const [room, setRoom] = useState<RoomSnapshot | null>(null)
@@ -108,6 +121,7 @@ export function Room({ circleId }: { circleId: string }) {
   // is signing in: the market object changes underneath it on every poll, and
   // keying the sheet on the object would remount it and throw away the quote.
   const [buying, setBuying] = useState<{ marketId: string; side: 'yes' | 'no' } | null>(null)
+  const [creating, setCreating] = useState(false)
 
   // Survives a hidden tab. Polling continues on a phone that has been pocketed,
   // which is where most of a watch party actually happens.
@@ -177,14 +191,6 @@ export function Room({ circleId }: { circleId: string }) {
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
           <span>{room.memberCount} in the room</span>
-          {room.session && (
-            <>
-              <span aria-hidden>·</span>
-              <span className={live ? 'font-mono text-[var(--yes)]' : 'font-mono'}>
-                {live ? countdown(remainingMs) : 'Ended'}
-              </span>
-            </>
-          )}
           {room.staleness.pricesAsOf && (
             <StalenessStamp asOf={room.staleness.pricesAsOf} stale={room.staleness.stale} />
           )}
@@ -200,6 +206,15 @@ export function Room({ circleId }: { circleId: string }) {
           </p>
         )}
       </header>
+
+      <SessionBar
+        wallet={connected.address}
+        circleId={room.circle.id}
+        session={room.session}
+        live={live}
+        onChanged={() => void load()}
+        onCreateMarket={() => setCreating(true)}
+      />
 
       <section aria-labelledby="markets-heading" className="flex flex-col gap-3 px-4">
         <h2 id="markets-heading" className="text-sm font-semibold uppercase tracking-wide text-[var(--text-muted)]">
@@ -288,6 +303,22 @@ export function Room({ circleId }: { circleId: string }) {
           </ul>
         )}
       </section>
+
+      {creating && connected && room.session && (
+        <CreateSheet
+          categories={categories}
+          circleId={room.circle.id}
+          sessionId={room.session.id}
+          connection={connection}
+          signer={connected.signer}
+          wallet={connected.address}
+          onClose={() => setCreating(false)}
+          onCreated={() => {
+            setCreating(false)
+            void load()
+          }}
+        />
+      )}
 
       {buying && connected && buyTarget && (
         <BuySheet
