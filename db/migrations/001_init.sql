@@ -57,6 +57,10 @@ CREATE TABLE live_sessions (
 );
 CREATE INDEX ON live_sessions (circle_id, started_at DESC);
 CREATE INDEX ON live_sessions (status, ends_at) WHERE status = 'active';
+-- One active session per circle. Two concurrent watch parties in one circle
+-- would make ends_at ambiguous, and every market in the room inherits the
+-- session's deadline — so this is a hard constraint, not a convention.
+CREATE UNIQUE INDEX ON live_sessions (circle_id) WHERE status = 'active';
 
 -- APPEND-ONLY LEDGER. Insert only — never update, never delete.
 -- The scoreboard and the activity feed are derived read models over this table.

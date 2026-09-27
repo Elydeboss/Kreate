@@ -18,6 +18,16 @@ import 'server-only'
 import { Pool, type PoolClient, type QueryResultRow } from 'pg'
 import { DATABASE_URL } from '@/lib/server/env'
 
+/**
+ * The minimum surface a query module needs. Both the pool and a checked-out
+ * transaction client satisfy it, so a query function can be called standalone or
+ * composed inside a transaction without taking a second code path.
+ */
+export interface Db {
+  query<T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]): Promise<T[]>
+  queryOne<T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]): Promise<T | null>
+}
+
 let pool: Pool | null = null
 
 /**
@@ -102,4 +112,19 @@ export const PG_CHECK_VIOLATION = '23514'
 
 export function isPgError(err: unknown, code: string): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === code
+}
+
+/** A `Db` bound to the pool, for the common case of no explicit transaction. */
+export const db: Db = { query, queryOne }
+
+/** A `Db` bound to a transaction client. */
+export function tx(client: PoolClient): Db {
+  return {
+    query: async <T extends QueryResultRow>(text: string, params: unknown[] = []) =>
+      (await client.query<T>(text, params)).rows,
+    queryOne: async <T extends QueryResultRow>(text: string, params: unknown[] = []) => {
+      const result = await client.query<T>(text, params)
+      return result.rows[0] ?? null
+    },
+  }
 }

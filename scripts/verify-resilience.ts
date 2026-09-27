@@ -49,7 +49,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 // ── Limiter ─────────────────────────────────────────────────────────────────
 
-function testLimiter(): void {
+async function testLimiter(): Promise<void> {
   console.log('\nlimiter')
 
   _resetLimiter()
@@ -95,9 +95,8 @@ function testLimiter(): void {
   for (let i = 0; i < FAMILY_LIMITS.build; i += 1) acquire('build')
   check('build is exhausted', !acquire('build').ok)
   console.log('        (waiting ~3.2s to observe one token refill)')
-  return sleep(3200).then(() => {
-    check('a token refills after the refill interval', acquire('build').ok)
-  })
+  await sleep(3200)
+  check('a token refills after the refill interval', acquire('build').ok)
 }
 
 // ── Cache ───────────────────────────────────────────────────────────────────
