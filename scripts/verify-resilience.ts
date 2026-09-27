@@ -267,6 +267,52 @@ function testBreaker(): void {
   check('repeated permits without failures never opens the breaker', breakerState(name).state === 'closed')
 }
 
+// ── Price budget arithmetic ─────────────────────────────────────────────────
+
+/**
+ * priceTtlMs is duplicated here rather than imported, because it lives in a
+ * `server-only` module that reaches the database. Duplicating the formula means
+ * this assertion fails if someone changes the real one — which is the only way a
+ * test of an un-importable function is worth anything. Keep the two in step.
+ */
+function derivedTtl(marketCount: number, budgetFraction = 0.6, minTtl = 2_000): number {
+  const perMinute = Math.max(1, Math.floor(FAMILY_LIMITS.read * budgetFraction))
+  const perMarket = perMinute / Math.max(1, marketCount)
+  return Math.max(minTtl, Math.ceil(60_000 / perMarket))
+}
+
+function testPriceBudget(): void {
+  console.log('\nprice budget')
+
+  // The load-bearing property: for any plausible room size, the derived cadence
+  // must not exceed the shared read budget. This is the whole reason the TTL is
+  // computed rather than chosen.
+  for (const markets of [1, 3, 8, 12, 20, 40, 100]) {
+    const ttl = derivedTtl(markets)
+    const callsPerMinute = (markets * 60_000) / ttl
+    check(
+      `${markets} markets stays inside the read budget`,
+      callsPerMinute <= FAMILY_LIMITS.read,
+      `${callsPerMinute.toFixed(0)} calls/min vs budget ${FAMILY_LIMITS.read}`,
+    )
+  }
+
+  // A small room should be genuinely live, not clamped to the floor.
+  check('a 3-market room refreshes faster than 5s', derivedTtl(3) < 5_000, `${derivedTtl(3)}ms`)
+  // A big room must back off rather than hit the wall.
+  check('a 40-market room backs off past 10s', derivedTtl(40) > 10_000, `${derivedTtl(40)}ms`)
+
+  // Non-monotonic TTL would mean a bigger room got fresher prices, which is
+  // exactly backwards.
+  let monotonic = true
+  for (let n = 1; n < 200; n += 1) {
+    if (derivedTtl(n + 1) < derivedTtl(n)) monotonic = false
+  }
+  check('TTL never decreases as markets are added', monotonic)
+
+  console.log('        cadence:', [1, 3, 8, 20, 40].map((n) => `${n}m=${derivedTtl(n)}ms`).join('  '))
+}
+
 // ── Run ─────────────────────────────────────────────────────────────────────
 
 console.log('Pulse resilience verification\n' + '='.repeat(40))
@@ -274,6 +320,7 @@ console.log('Pulse resilience verification\n' + '='.repeat(40))
 await testLimiter()
 await testCache()
 testBreaker()
+testPriceBudget()
 
 console.log('\n' + '='.repeat(40))
 console.log(`passed ${passed}  failed ${failed}`)

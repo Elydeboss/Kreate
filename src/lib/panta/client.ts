@@ -481,18 +481,35 @@ export const panta = {
     }),
 
   /** The ONLY live-price source. markets/list returns null prices. */
-  market: (marketId: string) =>
+  /**
+   * The only live-price source. `markets/list` does NOT carry live prices, so a
+   * room needs one call per market — which is why `ttlMs` is overridable.
+   *
+   * The default is a safety net for callers with no budget context. Anything
+   * running inside a room passes the TTL derived from its own market count in
+   * server/priceSync.ts, so a 20-market room slows down instead of spending a
+   * rate limit it does not have.
+   */
+  market: (marketId: string, ttlMs?: number) =>
     pantaGet<import('./types').PantaMarketDetail>(`markets/${marketId}/`, {
       family: 'read',
-      cache: { key: `market:${marketId}`, ttlMs: 20_000, staleMs: 40_000 },
+      cache: {
+        key: `market:${marketId}`,
+        ttlMs: ttlMs ?? 20_000,
+        staleMs: (ttlMs ?? 20_000) * 2,
+      },
       label: 'market-detail',
     }),
 
   /** Real on-chain tape. Never synthesise a substitute for this. */
-  marketTrades: (marketId: string) =>
+  marketTrades: (marketId: string, ttlMs?: number) =>
     pantaGet<import('./types').PantaTrade[]>(`markets/${marketId}/trades/`, {
       family: 'read',
-      cache: { key: `trades:${marketId}`, ttlMs: 15_000, staleMs: 30_000 },
+      cache: {
+        key: `trades:${marketId}`,
+        ttlMs: ttlMs ?? 15_000,
+        staleMs: (ttlMs ?? 15_000) * 2,
+      },
       label: 'trade-tape',
     }),
 
