@@ -58,10 +58,18 @@ export function toTransactionInstruction(ix: PantaInstruction): TransactionInstr
 }
 
 /**
- * Compile Panta's instructions into a signed VersionedTransaction.
+ * Compile Panta's instructions into a SIGNED VersionedTransaction.
  *
  * Always v0. Panta's instruction list may reference address lookup table
  * accounts, which only compile under a v0 message.
+ *
+ * ⚠ `signTransaction` RETURNS a new transaction. It does not sign in place.
+ * `TxSigner` wraps Wallet Standard, which takes serialised bytes and hands back
+ * signed bytes; our adapter re-deserialises those into a fresh object. Writing
+ * `await signer.signTransaction(tx); return tx` compiles perfectly, typechecks
+ * perfectly, and then broadcasts an UNSIGNED transaction — which fails on chain
+ * with a signature verification error that says nothing about the real cause.
+ * The return value is the signed one and it is the only one that may be sent.
  */
 export async function buildInstructionTransaction(
   instructions: PantaInstruction[],
@@ -78,9 +86,7 @@ export async function buildInstructionTransaction(
     instructions: instructions.map(toTransactionInstruction),
   }).compileToV0Message()
 
-  const tx = new VersionedTransaction(message)
-  await signer.signTransaction(tx)
-  return tx
+  return signer.signTransaction(new VersionedTransaction(message))
 }
 
 /**

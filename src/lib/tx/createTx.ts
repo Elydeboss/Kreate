@@ -45,6 +45,13 @@ export function deserializeCreateTransaction(build: CreateBuildResponse): Versio
 /**
  * Deserialize, sign, and broadcast a market-creation transaction.
  * Returns the signature to POST back to `/markets/register/`.
+ *
+ * ⚠ THE RETURN VALUE OF `signTransaction` IS THE ONE THAT GETS SENT. It returns
+ * a new transaction rather than signing in place, because `TxSigner` wraps
+ * Wallet Standard's bytes-in/bytes-out interface. `await signer.signTransaction(tx)`
+ * followed by `tx.serialize()` broadcasts an unsigned transaction and fails on
+ * chain with a signature error that points nowhere near the bug. Both tx paths
+ * had this; see the note in instructionTx.ts.
  */
 export async function signAndSendCreateTx(params: {
   connection: Connection
@@ -55,9 +62,14 @@ export async function signAndSendCreateTx(params: {
   const { connection, build, signer, skipPreflight = false } = params
 
   const tx = deserializeCreateTransaction(build)
-  await signer.signTransaction(tx)
+  // Catch the common failure before the wallet popup rather than after it. A
+  // stale createId still carries a perfectly valid fee payer, so this is the only
+  // place the mismatch is visible, and it is visible to a user who can act.
+  assertSignableBy(tx, signer.publicKey.toBase58())
 
-  return connection.sendRawTransaction(tx.serialize(), {
+  const signed = await signer.signTransaction(tx)
+
+  return connection.sendRawTransaction(signed.serialize(), {
     maxRetries: 3,
     skipPreflight,
     preflightCommitment: 'confirmed',

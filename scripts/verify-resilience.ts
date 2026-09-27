@@ -377,6 +377,25 @@ function testContractInvariants(): void {
     exists('src/lib/tx/createTx.ts') && exists('src/lib/tx/instructionTx.ts'),
   )
 
+  // `signTransaction` RETURNS a new transaction; it does not sign in place. The
+  // adapter wraps Wallet Standard's bytes-in/bytes-out interface and
+  // re-deserialises the result, so `await signer.signTransaction(tx)` on its own
+  // leaves `tx` unsigned. Broadcasting that fails on chain with a signature
+  // verification error that names neither the wallet nor the cause. Both paths
+  // had this bug and it typechecked in both, which is why it is asserted rather
+  // than reviewed.
+  for (const [label, path] of [
+    ['create', 'src/lib/tx/createTx.ts'],
+    ['buy/claim', 'src/lib/tx/instructionTx.ts'],
+  ] as const) {
+    const src = code(path)
+    check(`${label} tx path uses the returned signed transaction`, callResultsUsed(src, 'signer.signTransaction'))
+    check(
+      `${label} tx path broadcasts a serialised transaction`,
+      /sendRawTransaction\(\s*\w+\.serialize\(\)/.test(src),
+    )
+  }
+
   // Build takes a QUOTE ID and mints the orderId. Swapping them is a 400 whose
   // message reads like a server fault, because the response is the thing that
   // carries the orderId.
@@ -486,6 +505,44 @@ function listOf(source: string, name: string): string[] {
   // narrows it without a non-null assertion that the regex cannot actually
   // violate but a future edit might.
   return [...source.slice(open, close).matchAll(/'([a-z]+)'/g)].flatMap((m) => (m[1] ? [m[1]] : []))
+}
+
+/**
+ * True when every call to `callee` has its return value used.
+ *
+ * A call counts as used when the text immediately before it is `return`, or ends
+ * in `=`. Anything else — a bare `await f(x)` statement, which is the exact shape
+ * of the signTransaction bug — is discarded.
+ *
+ * The first version of this check looked for a trailing semicolon and passed on
+ * the broken code, because the bug was written as a bare statement with no
+ * semicolon. An assertion that cannot fail on the bug it was written for is
+ * worse than no assertion, so this one reasons about the token before the call
+ * rather than the punctuation after it. Verified against both shapes.
+ */
+function callResultsUsed(source: string, callee: string): boolean {
+  const needle = `${callee}(`
+  let at = source.indexOf(needle)
+  if (at === -1) return false
+
+  while (at !== -1) {
+    // Comments are already stripped, so this prefix is code only. A trailing
+    // `await` belongs to the call, not to the value, so it is removed before
+    // deciding whether the result is consumed. Trimmed FIRST, because the text
+    // ends with `await ` and `$` would not match past that space — which is what
+    // made an early version of this check pass on a correct `const x = await f()`
+    // and reject it on a buggy one for the wrong reason.
+    const before = source
+      .slice(0, at)
+      .replace(/\s+/g, ' ')
+      .trimEnd()
+      .replace(/\bawait$/, '')
+      .trimEnd()
+
+    if (!/\breturn$/.test(before) && !/=$/.test(before)) return false
+    at = source.indexOf(needle, at + needle.length)
+  }
+  return true
 }
 
 /**
