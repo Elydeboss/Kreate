@@ -9,6 +9,7 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "db:migrate": "node --import ./scripts/register-ts.mjs scripts/migrate.ts",
+    "tiles": "node --import ./scripts/register-ts.mjs scripts/render-tiles.ts",
     "verify": "node --import ./scripts/register-ts.mjs scripts/verify-resilience.ts",
     "check": "npm run typecheck && npm run verify"
   },

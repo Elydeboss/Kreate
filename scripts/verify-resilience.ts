@@ -19,6 +19,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { inflateSync } from 'node:zlib'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -39,6 +40,7 @@ import {
   recordSuccess,
   type BreakerOptions,
 } from '../src/lib/panta/breaker.ts'
+import { paintTile, TILE_SPECS, tileFor, tileUrl } from '../src/lib/image/tiles.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -442,7 +444,6 @@ function testContractInvariants(): void {
       appCategories.every((c) => pantsCategories.includes(c)),
     `app=[${appCategories}] panta=[${pantsCategories}]`,
   )
-
   // ── The client/server boundary, at the layer where it would be crossed ──────
   //
   // Signed transactions never touch the Pulse server. That is not a preference:
@@ -488,6 +489,240 @@ function testContractInvariants(): void {
       !/secretKey|privateKey|mnemonic|seedPhrase/i.test(src),
     )
   }
+}
+
+/**
+ * Market tiles are measured, not reviewed.
+ *
+ * The tiles are geometry from a distance function, which is precisely the kind
+ * of code that looks right in the source and wrong on screen. The politics mark
+ * shipped for a while in exactly that state: the bands were written with negative
+ * half-widths, so every test was `|nx| < -0.5`, the mark covered 0.00% of the
+ * canvas, and it rendered as a blank swatch. It typechecked. It produced a
+ * valid 23 kB PNG. Nothing but measuring it could have caught it.
+ *
+ * Three properties, all of which failed at least once during development:
+ *
+ *   COVERAGE   the mark occupies a real fraction of the canvas. Below 2% it is a
+ *              speck; above 40% it is a colour swatch with a hole in it.
+ *   CONTRAST   the mark differs from its own background by enough to see.
+ *              Measured over covered pixels only — a whole-canvas mean is just
+ *              coverage multiplied by this, so it says nothing new.
+ *   RESOLUTION 48px is the size the room actually shows. Coverage there has to
+ *              hold up, and no two tiles may be hard to tell apart, because a
+ *              tile that only reads at 1024px does not read in the product.
+ */
+function testTiles(): void {
+  console.log('\nmarket tiles')
+
+  const luma = (c: readonly [number, number, number]): number =>
+    0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+  /** Coverage of the mark, and how far it stands from the background. */
+  const measure = (spec: (typeof TILE_SPECS)[number], size: number) => {
+    const tile = paintTile(spec, size)
+    // The corner is background by construction — no mark reaches it — so it is
+    // the reference the mark is measured against rather than a hardcoded black
+    // that would drift the moment the gradient changed.
+    const base = luma(tile.get(2, 2))
+    let covered = 0
+    let delta = 0
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        const d = Math.abs(luma(tile.get(x, y)) - base)
+        if (d > 10) {
+          covered += 1
+          delta += d
+        }
+      }
+    }
+    return { coverage: covered / (size * size), contrast: covered > 0 ? delta / covered : 0 }
+  }
+
+  check('every Panta category has a tile', TILE_SPECS.length === 8, `${TILE_SPECS.length} tiles`)
+
+  for (const spec of TILE_SPECS) {
+    const big = measure(spec, 128)
+    const small = measure(spec, 48)
+
+    check(
+      `tile ${spec.category} has a visible mark at 1024`,
+      big.coverage >= 0.02 && big.coverage <= 0.4 && big.contrast >= 40,
+      `coverage=${(big.coverage * 100).toFixed(2)}% contrast=${big.contrast.toFixed(0)}`,
+    )
+    check(
+      `tile ${spec.category} survives the 48px downscale`,
+      small.coverage >= 0.02 && small.contrast >= 40,
+      `coverage=${(small.coverage * 100).toFixed(2)}% contrast=${small.contrast.toFixed(0)}`,
+    )
+  }
+
+  // Pairwise, at the size the room shows. Destructured into a local so the loops
+  // index a plain array rather than a readonly tuple, which under
+  // noUncheckedIndexedAccess makes every element `TileSpec | undefined` and
+  // forces an assertion at every use. Here the bounds are `i < a.length` in the
+  // loop condition itself, so there is nothing to assert.
+  const specs = [...TILE_SPECS]
+  let closest = { distance: Infinity, pair: '' }
+  for (let i = 0; i < specs.length; i += 1) {
+    for (let j = i + 1; j < specs.length; j += 1) {
+      const a = paintTile(specs[i]!, 48)
+      const b = paintTile(specs[j]!, 48)
+      let total = 0
+      let n = 0
+      for (let y = 0; y < 48; y += 1) {
+        for (let x = 0; x < 48; x += 1) {
+          total += Math.abs(luma(a.get(x, y)) - luma(b.get(x, y)))
+          n += 1
+        }
+      }
+      const distance = total / n
+      if (distance < closest.distance) {
+        closest = { distance, pair: `${specs[i]!.category}/${specs[j]!.category}` }
+      }
+    }
+  }
+  check(
+    'no two tiles are hard to tell apart at 48px',
+    closest.distance > 8,
+    `closest ${closest.pair} at ${closest.distance.toFixed(1)}`,
+  )
+
+  // An unknown category must still produce an image. Panta fetches this URL
+  // from its own infrastructure and a 404 here fails a market creation the user
+  // has already paid to quote.
+  check(
+    'an unknown category falls back rather than throwing',
+    tileFor('not-a-category') !== undefined,
+  )
+  check(
+    'the fallback is one of the real tiles',
+    TILE_SPECS.some((t) => t.category === tileFor('not-a-category').category),
+  )
+
+  // ── The URL the app sends, checked against the URL the route serves ─────────
+  //
+  // These two have to agree and there is no compiler that can tell us if they
+  // do. The bug is silent and total: the route served a valid PNG for every
+  // request, with a 200 and a correct content type, so nothing failed — the
+  // markets just all had the same picture, and only a byte-identical size across
+  // eight different categories gave it away.
+  const tileRoute = code('src/app/tiles/[category]/route.ts')
+  const built = tileUrl('https://pulse.example', 'crypto')
+  check('tileUrl builds a path under /tiles', built === 'https://pulse.example/tiles/crypto.png', built)
+  check('the tiles route is a dynamic segment', exists('src/app/tiles/[category]/route.ts'))
+  check(
+    'the tiles route tolerates the .png suffix tileUrl adds',
+    /replace\(\/\\\.png\$\/i, ''\)|endsWith\('\.png'\)|\.replace\(.*\\\.png/.test(tileRoute),
+  )
+  check(
+    'tileUrl escapes the category',
+    tileUrl('https://pulse.example', 'a b/c') === 'https://pulse.example/tiles/a%20b%2Fc.png',
+    tileUrl('https://pulse.example', 'a b/c'),
+  )
+  check('tileUrl does not double up slashes on an origin with a trailing one',
+    tileUrl('https://pulse.example/', 'crypto') === 'https://pulse.example/tiles/crypto.png')
+
+  // The encoder is hand-rolled, so its output is parsed back rather than
+  // trusted. A PNG with a wrong CRC or a truncated IDAT still has a valid
+  // header — `file` reports it as a 1024×1024 PNG — and is rejected by the
+  // first decoder that tries to read pixels, which is Panta's, on stage. Every
+  // chunk's checksum is recomputed here and the pixel data is inflated back to
+  // its expected length.
+  for (const spec of TILE_SPECS) {
+    const png = paintTile(spec, 64).toPng()
+    const parsed = parsePng(png)
+    check(
+      `tile ${spec.category} encodes a decodable png`,
+      parsed.valid &&
+        parsed.width === 64 &&
+        parsed.height === 64 &&
+        parsed.bitDepth === 8 &&
+        parsed.colourType === 2 &&
+        parsed.interlace === 0,
+      parsed.reason ?? 'ok',
+    )
+  }
+}
+
+/**
+ * Re-read a PNG the way a decoder does: signature, chunk CRCs, IHDR fields, and
+ * an actual inflate of the pixel data. Returns a `reason` rather than throwing,
+ * so a failure names what was wrong instead of just going red.
+ */
+function parsePng(png: Buffer): {
+  valid: boolean
+  reason?: string
+  width: number
+  height: number
+  bitDepth: number
+  colourType: number
+  interlace: number
+} {
+  const empty = { width: 0, height: 0, bitDepth: 0, colourType: 0, interlace: 0 }
+  const fail = (reason: string) => ({ ...empty, valid: false, reason })
+
+  if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') return fail('bad signature')
+
+  let at = 8
+  const idat: Buffer[] = []
+  let ihdr: Buffer | null = null
+  let sawEnd = false
+
+  while (at + 8 <= png.length) {
+    const length = png.readUInt32BE(at)
+    const type = png.subarray(at + 4, at + 8).toString('ascii')
+    const data = png.subarray(at + 8, at + 8 + length)
+    const declared = png.readUInt32BE(at + 8 + length)
+
+    // Recompute rather than compare against a stored value: this is the only
+    // check that would catch a wrong CRC constant in the encoder.
+    if (crc32(Buffer.concat([Buffer.from(type, 'ascii'), data])) !== declared) {
+      return fail(`crc mismatch in ${type}`)
+    }
+
+    if (type === 'IHDR') ihdr = Buffer.from(data)
+    if (type === 'IDAT') idat.push(Buffer.from(data))
+    if (type === 'IEND') sawEnd = true
+
+    at += 12 + length
+  }
+
+  if (!ihdr) return fail('no IHDR')
+  if (idat.length === 0) return fail('no IDAT')
+  if (!sawEnd) return fail('no IEND')
+
+  const width = ihdr.readUInt32BE(0)
+  const height = ihdr.readUInt32BE(4)
+  const bitDepth = ihdr[8]!
+  const colourType = ihdr[9]!
+  const interlace = ihdr[12]!
+
+  if (bitDepth !== 8 || colourType !== 2) return fail(`unsupported depth/type ${bitDepth}/${colourType}`)
+
+  // Colour type 2 is three bytes per pixel. Each scanline carries a one-byte
+  // filter prefix, so the inflated stream must be exactly this long or the
+  // pixel data is truncated.
+  let raw: Buffer
+  try {
+    raw = inflateSync(Buffer.concat(idat))
+  } catch (err) {
+    return fail(`inflate failed: ${(err as Error).message}`)
+  }
+  const expected = (width * 3 + 1) * height
+  if (raw.length !== expected) return fail(`pixel data is ${raw.length} bytes, expected ${expected}`)
+
+  return { valid: true, width, height, bitDepth, colourType, interlace }
+}
+
+/** CRC-32 as PNG defines it. Deliberately a second implementation of png.ts's. */
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff
+  for (let i = 0; i < buf.length; i += 1) {
+    c ^= buf[i]!
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+  }
+  return (c ^ 0xffffffff) >>> 0
 }
 
 /** A source file with its comments removed. */
@@ -626,6 +861,7 @@ await testCache()
 testBreaker()
 testPriceBudget()
 testContractInvariants()
+testTiles()
 
 console.log('\n' + '='.repeat(40))
 console.log(`passed ${passed}  failed ${failed}`)

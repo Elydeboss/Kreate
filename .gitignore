@@ -27,3 +27,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+
+# Rendered tile previews from `npm run tiles`. Regenerable, never committed.
+tmp/
