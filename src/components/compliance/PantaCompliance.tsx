@@ -50,8 +50,8 @@ export function StalenessStamp({
   // entirely would mean a layout shift every time a poll lands, and the whole
   // point is that a reader can always see when the number is from.
   const tone = stale
-    ? 'text-[var(--warn)] border-[var(--warn)]'
-    : 'text-[var(--text-faint)] border-transparent'
+    ? 'border-[color-mix(in_oklch,var(--warn)_45%,transparent)] bg-[var(--warn-wash)] text-[var(--warn)]'
+    : 'border-transparent text-[var(--text-faint)]'
 
   return (
     <span
@@ -62,7 +62,7 @@ export function StalenessStamp({
           : `Prices as of ${time}`
       }
     >
-      {stale && <span aria-hidden>⚠</span>}
+      {stale && <span aria-hidden className="size-1 rounded-full bg-[var(--warn)]" />}
       <span>as of {time}</span>
     </span>
   )
@@ -80,13 +80,14 @@ export function StalenessStamp({
  */
 export function PoweredByPanta({ className = '' }: { className?: string }) {
   return (
-    <p className={`text-center text-xs text-[var(--text-faint)] ${className}`}>
+    <p className={`flex items-center justify-center gap-1.5 text-center text-xs text-[var(--text-faint)] ${className}`}>
+      <span aria-hidden className="inline-block size-1 rounded-full bg-[var(--accent)]" />
       Powered by{' '}
       <a
         href="https://panta.market"
         target="_blank"
         rel="noopener noreferrer"
-        className="font-medium text-[var(--text-muted)] underline underline-offset-2"
+        className="font-bold text-[var(--text-muted)] underline decoration-[var(--border-strong)] underline-offset-2 transition-colors hover:text-[var(--accent)]"
       >
         Panta
       </a>
@@ -115,7 +116,7 @@ export function TxLink({
       href={clientConfig.explorerTxUrl(signature)}
       target="_blank"
       rel="noopener noreferrer"
-      className={`font-mono underline underline-offset-2 ${className}`}
+      className={`font-mono underline decoration-[var(--border-strong)] underline-offset-2 transition-colors hover:text-[var(--accent)] ${className}`}
     >
       {children ?? `${signature.slice(0, 4)}…${signature.slice(-4)}`}
     </a>
@@ -128,7 +129,7 @@ export function AddressLink({ address, className = '' }: { address: string; clas
       href={clientConfig.explorerAccountUrl(address)}
       target="_blank"
       rel="noopener noreferrer"
-      className={`font-mono underline underline-offset-2 ${className}`}
+      className={`font-mono underline decoration-[var(--border-strong)] underline-offset-2 transition-colors hover:text-[var(--accent)] ${className}`}
     >
       {address}
     </a>

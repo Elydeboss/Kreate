@@ -73,12 +73,13 @@ export default function FoundationPage() {
         )}
       </section>
 
-      <section className="rounded-[var(--radius)] border border-[var(--warn)] bg-[var(--warn-wash)] p-4">
-        <h2 className="mb-1 text-sm font-medium">Product UI not built yet</h2>
+      <section className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] p-4">
+        <h2 className="mb-1 text-sm font-semibold">Product UI</h2>
         <p className="text-sm text-[var(--text-muted)]">
-          This page is a smoke test for the Panta integration layer. Wallet connect, Circle,
-          Live Session, Create, Buy and Claim are the next tasks in{' '}
-          <code>docs/ARCHITECTURE.md</code> §10.
+          Landing, circles, live sessions, create and buy live at <code>/</code> and{' '}
+          <code>/c/&lt;circle-id&gt;</code>. Claim is still to come. This page is a smoke test
+          for the integration layer — the rate budget above is the first thing to look at when a
+          room goes slow.
         </p>
       </section>
 

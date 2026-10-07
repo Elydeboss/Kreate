@@ -14,6 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { Wallet, X } from '@phosphor-icons/react'
 import { useWalletContext } from '@/lib/wallet/WalletProvider'
 import { shortenAddress } from '@/lib/wallet/useWallet'
 import { clientConfig } from '@/lib/client/config'
@@ -24,26 +25,30 @@ export function ConnectButton() {
 
   if (connected) {
     return (
-      <div className="flex items-center gap-1">
+      <div className="flex shrink-0 items-center gap-1">
         <a
           href={clientConfig.explorerAccountUrl(connected.address)}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex min-h-[2.75rem] items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] px-3 font-mono text-sm"
+          className="flex min-h-[2.75rem] items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] px-2.5 font-mono text-sm shadow-[var(--shadow-card)] transition-colors hover:border-[var(--border-strong)]"
           title={connected.address}
         >
           {connected.icon ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={connected.icon} alt="" className="size-5 rounded-full" />
-          ) : null}
+          ) : (
+            <span className="size-2 rounded-full bg-[var(--yes)]" aria-hidden />
+          )}
           {shortenAddress(connected.address)}
         </a>
         <button
           type="button"
           onClick={disconnect}
-          className="min-h-[2.75rem] rounded-[var(--radius)] px-3 text-sm text-[var(--text-muted)]"
+          aria-label="Disconnect wallet"
+          className="btn btn-ghost px-2.5"
         >
-          Disconnect
+          <X size={14} weight="bold" />
+          <span className="hidden sm:inline">Disconnect</span>
         </button>
       </div>
     )
@@ -55,8 +60,9 @@ export function ConnectButton() {
         type="button"
         onClick={() => setOpen(true)}
         disabled={discovering || connecting}
-        className="min-h-[2.75rem] rounded-[var(--radius)] bg-[var(--accent)] px-4 font-medium text-white disabled:opacity-60"
+        className="btn btn-primary shrink-0 px-4"
       >
+        <Wallet size={16} weight="bold" />
         {discovering ? 'Looking for wallets…' : connecting ? 'Open your wallet…' : 'Connect wallet'}
       </button>
       {open && (
@@ -120,7 +126,7 @@ function WalletSheet({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center"
+      className="sheet-scrim"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
@@ -130,11 +136,13 @@ function WalletSheet({
         role="dialog"
         aria-modal="true"
         aria-label="Connect a wallet"
-        className="w-full max-w-md rounded-t-[var(--radius)] border-t border-[var(--border)] bg-[var(--surface-raised)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:rounded-[var(--radius)] sm:border"
+        className="sheet"
       >
-        <div className="mb-4 flex items-start justify-between gap-4">
+        <span className="sheet-handle" aria-hidden />
+
+        <div className="mb-1 flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-base font-semibold">Connect a wallet</h2>
+            <h2 className="text-lg font-bold tracking-tight">Connect a wallet</h2>
             <p className="mt-0.5 text-sm text-[var(--text-muted)]">
               Your wallet is your account. There is no sign-up and no password.
             </p>
@@ -144,22 +152,22 @@ function WalletSheet({
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="min-h-[2.75rem] min-w-[2.75rem] rounded-[var(--radius)] text-lg text-[var(--text-muted)]"
+            className="rounded-[var(--radius)] p-2 text-[var(--text-faint)] transition-colors hover:text-[var(--text)]"
           >
-            ✕
+            <X size={18} weight="bold" />
           </button>
         </div>
 
         {error && (
-          <p role="alert" className="mb-3 rounded-[var(--radius-sm)] bg-[var(--no-wash)] px-3 py-2 text-sm text-[var(--no-strong)]">
+          <p role="alert" className="rounded-[var(--radius-sm)] bg-[var(--no-wash)] px-3 py-2 text-sm text-[var(--no-strong)]">
             {error}
           </p>
         )}
 
         {available.length === 0 ? (
-          <div className="rounded-[var(--radius-sm)] bg-[var(--warn-wash)] px-3 py-3 text-sm text-[var(--text-muted)]">
-            <p className="font-medium text-[var(--text)]">No Solana wallet found</p>
-            <p className="mt-1">
+          <div className="flex flex-col gap-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-muted)]">
+            <p className="font-bold text-[var(--text)]">No Solana wallet found</p>
+            <p className="mt-1 leading-relaxed">
               Install Phantom, Solflare, or Backpack on this device, then reload. Inside an in-app
               browser, open the page in your wallet&apos;s own browser instead.
             </p>
@@ -172,23 +180,39 @@ function WalletSheet({
                   type="button"
                   onClick={() => void pick(entry)}
                   disabled={busy !== null}
-                  className="flex min-h-[3.25rem] w-full items-center gap-3 rounded-[var(--radius)] border border-[var(--border)] px-3 text-left disabled:opacity-60"
+                  className="flex min-h-[3.5rem] w-full items-center gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] px-3 text-left transition-colors hover:border-[var(--border-strong)] disabled:opacity-60"
                 >
                   {entry.icon ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={entry.icon} alt="" className="size-7 rounded-full" />
+                    <img
+                      src={entry.icon}
+                      alt=""
+                      className="size-8 rounded-full ring-1 ring-[var(--border)]"
+                    />
                   ) : (
-                    <span className="size-7 rounded-full bg-[var(--surface-sunken)]" />
+                    <span className="grid size-8 shrink-0 place-items-center rounded-full bg-[var(--surface-sunken)]">
+                      <Wallet size={16} weight="bold" className="text-[var(--text-faint)]" />
+                    </span>
                   )}
-                  <span className="flex-1 font-medium">{entry.name}</span>
-                  {busy === entry.key && <span className="text-sm text-[var(--text-faint)]">Waiting…</span>}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-semibold">{entry.name}</span>
+                    <span className="block font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-faint)]">
+                      {entry.wallet?.chains?.some((c) => c.startsWith('solana:')) ? 'Solana' : 'Wallet'}
+                    </span>
+                  </span>
+                  {busy === entry.key ? (
+                    <span className="flex items-center gap-1.5 text-sm text-[var(--text-faint)]">
+                      <span className="size-1.5 animate-pulse rounded-full bg-[var(--accent)]" aria-hidden />
+                      Waiting…
+                    </span>
+                  ) : null}
                 </button>
               </li>
             ))}
           </ul>
         )}
 
-        <p className="mt-4 text-xs text-[var(--text-faint)]">
+        <p className="text-xs text-[var(--text-faint)]">
           Pulse never sees your private key. Transactions are signed in your wallet and broadcast
           straight from your browser.
         </p>

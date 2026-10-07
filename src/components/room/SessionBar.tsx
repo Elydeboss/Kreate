@@ -30,6 +30,7 @@
  */
 
 import { useState } from 'react'
+import { ArrowRight, Plus, X } from '@phosphor-icons/react'
 import { ApiError, endSession, startSession, newIdempotencyKey } from '@/lib/client/api'
 import { countdown } from '@/lib/format'
 
@@ -63,15 +64,15 @@ export function SessionBar({
   // ── No session yet, or the last one is over ───────────────────────────────
   if (!session || session.status === 'ended') {
     return (
-      <section className="flex flex-col gap-3 border-b border-[var(--border)] bg-[var(--surface-raised)] px-4 py-4">
+      <section className="flex flex-col gap-3 px-4">
         {session && (
-          <p className="text-xs text-[var(--text-muted)]">
-            Last session ended · <span className="font-medium">{session.title}</span>
+          <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--text-faint)]">
+            Last session ended · <span className="normal-case text-[var(--text-muted)]">{session.title}</span>
           </p>
         )}
 
         <div className="flex flex-col gap-2">
-          <label htmlFor="session-title" className="text-xs text-[var(--text-muted)]">
+          <label htmlFor="session-title" className="label">
             What are you watching?
           </label>
           <input
@@ -82,7 +83,7 @@ export function SessionBar({
             placeholder="Arsenal vs Chelsea"
             maxLength={120}
             disabled={busy}
-            className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-base outline-none focus:border-[var(--accent)]"
+            className="input"
           />
         </div>
 
@@ -90,9 +91,10 @@ export function SessionBar({
           type="button"
           onClick={() => void go(start)}
           disabled={busy}
-          className="min-h-[2.75rem] rounded-[var(--radius)] bg-[var(--accent)] font-semibold text-[var(--surface)] disabled:opacity-50"
+          className="btn btn-primary w-full"
         >
           {busy ? 'Starting…' : 'Start the watch party'}
+          {!busy && <ArrowRight size={16} weight="bold" />}
         </button>
 
         {error && (
@@ -106,36 +108,51 @@ export function SessionBar({
 
   // ── Live ──────────────────────────────────────────────────────────────────
   const remainingMs = new Date(session.endsAt).getTime() - Date.now()
+  const underTen = live && remainingMs <= 60_000
 
   return (
-    <section className="flex flex-col gap-3 border-b border-[var(--border)] px-4 py-4">
-      <div className="flex items-baseline justify-between gap-3">
-        <h2 className="truncate font-semibold tracking-tight">{session.title}</h2>
-        <span className={`shrink-0 font-mono text-sm ${live ? 'text-[var(--yes)]' : 'text-[var(--text-faint)]'}`}>
-          {live ? countdown(remainingMs) : 'Ending…'}
-        </span>
+    <section className="flex flex-col gap-3 px-4">
+      <div className="pulse-card flex flex-col gap-3 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2.5">
+            {live && <span className="live-dot" aria-hidden />}
+            <h2 className="truncate text-lg font-bold tracking-tight">{session.title}</h2>
+          </div>
+          <span
+            className={`shrink-0 font-mono text-xl font-bold tabular-nums tracking-tight ${
+              live ? (underTen ? 'text-[var(--warn)]' : 'text-[var(--text)]') : 'text-[var(--text-faint)]'
+            }`}
+          >
+            {live ? countdown(remainingMs) : 'Ended'}
+          </span>
+        </div>
+
+        {/* The primary action while live. Creating a market is the thing a host
+            does, and burying it is why a watch party sits there with nothing to
+            bet on. */}
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onCreateMarket}
+            disabled={!live}
+            className="btn btn-primary flex-1"
+          >
+            <Plus size={16} weight="bold" />
+            {live ? 'Call a market' : 'Session over'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void go(end)}
+            disabled={busy}
+            aria-label="End the session"
+            title="End the session"
+            className="btn btn-ghost shrink-0 px-3"
+          >
+            <X size={16} weight="bold" />
+            <span className="hidden sm:inline">End</span>
+          </button>
+        </div>
       </div>
-
-      {/* The primary action while live. Creating a market is the thing a host
-          does, and burying it is why a watch party sits there with nothing to
-          bet on. */}
-      <button
-        type="button"
-        onClick={onCreateMarket}
-        disabled={!live}
-        className="min-h-[2.75rem] rounded-[var(--radius)] bg-[var(--accent)] font-semibold text-[var(--surface)] disabled:opacity-40"
-      >
-        {live ? 'Call a new market' : 'This session is over'}
-      </button>
-
-      <button
-        type="button"
-        onClick={() => void go(end)}
-        disabled={busy}
-        className="min-h-[2.75rem] rounded-[var(--radius)] border border-[var(--border)] text-sm text-[var(--text-muted)] disabled:opacity-40"
-      >
-        {busy ? 'Ending…' : 'End the session'}
-      </button>
 
       {error && (
         <p role="alert" className="text-xs text-[var(--danger)]">

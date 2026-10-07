@@ -30,6 +30,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
+import { Check, Lightning, X } from '@phosphor-icons/react'
 import type { Connection } from '@solana/web3.js'
 import { useCreateFlow, type CreateStage } from '@/lib/trade/useCreateFlow'
 // From ./tileUrl and NOT ./tiles. The painter imports node:zlib, and webpack
@@ -184,7 +185,7 @@ export function CreateSheet({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center"
+      className="sheet-scrim"
       onClick={(e) => {
         if (e.target === e.currentTarget && !inFlight) onClose()
       }}
@@ -193,11 +194,13 @@ export function CreateSheet({
         role="dialog"
         aria-modal="true"
         aria-label="Call a new market"
-        className="flex max-h-[92vh] w-full max-w-md flex-col gap-4 overflow-y-auto rounded-t-[var(--radius)] border-t border-[var(--border)] bg-[var(--surface-raised)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:rounded-[var(--radius)] sm:border"
+        className="sheet"
       >
+        <span className="sheet-handle" aria-hidden />
+
         <header className="flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold">Call a new market</h2>
+            <h2 className="text-lg font-bold tracking-tight">Call a new market</h2>
             <p className="mt-0.5 text-sm text-[var(--text-muted)]">
               One yes/no question the room can take a position on.
             </p>
@@ -207,9 +210,9 @@ export function CreateSheet({
             onClick={onClose}
             disabled={inFlight}
             aria-label="Close"
-            className="-mr-1 -mt-1 rounded p-2 text-[var(--text-faint)] disabled:opacity-40"
+            className="-mr-1 -mt-1 rounded-[var(--radius)] p-2 text-[var(--text-faint)] transition-colors hover:text-[var(--text)] disabled:opacity-40"
           >
-            ✕
+            <X size={18} weight="bold" />
           </button>
         </header>
 
@@ -217,7 +220,7 @@ export function CreateSheet({
           <>
             {/* ── The question ───────────────────────────────────────────── */}
             <div className="flex flex-col gap-2">
-              <label htmlFor="create-question" className="text-xs text-[var(--text-muted)]">
+              <label htmlFor="create-question" className="label">
                 Question
               </label>
               <textarea
@@ -228,13 +231,13 @@ export function CreateSheet({
                 rows={2}
                 disabled={flow.busy}
                 placeholder="Will there be a goal before half time?"
-                className="resize-none rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-base outline-none focus:border-[var(--accent)]"
+                className="input resize-none"
               />
             </div>
 
             {/* ── The category, which is also the tile ──────────────────── */}
             <div className="flex flex-col gap-2">
-              <span className="text-xs text-[var(--text-muted)]">Category</span>
+              <span className="label">Category</span>
               <div className="flex flex-wrap gap-2">
                 {categories.map((c) => (
                   <button
@@ -243,10 +246,10 @@ export function CreateSheet({
                     onClick={() => setCategory(c)}
                     disabled={flow.busy}
                     aria-pressed={c === category}
-                    className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-xs capitalize disabled:opacity-40 ${
+                    className={`flex items-center gap-2 rounded-[var(--radius-sm)] border px-2.5 py-2 text-xs font-medium capitalize transition-colors disabled:opacity-40 ${
                       c === category
-                        ? 'border-[var(--accent)] font-semibold'
-                        : 'border-[var(--border)] text-[var(--text-muted)]'
+                        ? 'border-[var(--accent)] bg-[var(--accent-wash)] text-[var(--accent)] shadow-[0_0_0_1px_color-mix(in_oklch,var(--accent)_35%,transparent)]'
+                        : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-strong)]'
                     }`}
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -255,7 +258,7 @@ export function CreateSheet({
                       alt=""
                       width={16}
                       height={16}
-                      className="size-4 rounded-full"
+                      className="size-4 rounded-[var(--radius-xs)] object-cover"
                     />
                     {c}
                   </button>
@@ -264,14 +267,20 @@ export function CreateSheet({
             </div>
 
             {/* ── The fee ───────────────────────────────────────────────── */}
-            <div className="flex flex-col gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3">
+            <div className="pulse-card flex flex-col gap-2.5 p-3">
               {state.stage === 'quoting' || state.stage === 'editing' ? (
-                <p className="text-sm text-[var(--text-muted)]">Asking Panta what this costs…</p>
+                <p className="text-sm text-[var(--text-muted)]">
+                  <span className="mr-2 inline-block size-1.5 animate-pulse rounded-full bg-[var(--accent)]" aria-hidden />
+                  Asking Panta what this costs…
+                </p>
               ) : (
                 <>
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-sm text-[var(--text-muted)]">Creation fee</span>
-                    <span className="font-mono text-lg font-semibold">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1.5 text-sm text-[var(--text-muted)]">
+                      <Lightning size={14} weight="fill" className="text-[var(--accent)]" />
+                      Creation fee
+                    </span>
+                    <span className="font-mono text-2xl font-bold tracking-tight tabular-nums">
                       {usdc(Number(state.buildFee ?? state.quote?.paymentUsdc))}
                     </span>
                   </div>
@@ -298,12 +307,12 @@ export function CreateSheet({
                 type="button"
                 onClick={() => setShowDetails((v) => !v)}
                 aria-expanded={showDetails}
-                className="self-start text-xs text-[var(--text-muted)] underline"
+                className="self-start text-xs font-medium text-[var(--text-muted)] underline underline-offset-2"
               >
                 {showDetails ? 'Hide resolution details' : 'How does this resolve?'}
               </button>
               {showDetails && (
-                <div className="flex flex-col gap-3 rounded-[var(--radius)] border border-[var(--border)] p-3">
+                <div className="pulse-card flex flex-col gap-3 p-3">
                   <label className="flex flex-col gap-1 text-xs text-[var(--text-muted)]">
                     Resolution rule
                     <textarea
@@ -311,7 +320,7 @@ export function CreateSheet({
                       onChange={(e) => setRuleOverride(e.target.value)}
                       rows={4}
                       disabled={flow.busy}
-                      className="resize-none rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2 py-2 text-xs leading-relaxed"
+                      className="resize-none rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2 py-2 text-xs leading-relaxed outline-none focus:border-[var(--accent)]"
                     />
                   </label>
                   <label className="flex flex-col gap-1 text-xs text-[var(--text-muted)]">
@@ -321,7 +330,7 @@ export function CreateSheet({
                       value={source}
                       onChange={(e) => setSource(e.target.value)}
                       disabled={flow.busy}
-                      className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2 py-2 text-xs"
+                      className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2 py-2 text-xs outline-none focus:border-[var(--accent)]"
                     />
                   </label>
                 </div>
@@ -330,7 +339,7 @@ export function CreateSheet({
 
             {/* ── The localhost wall ───────────────────────────────────── */}
             {!fetchable && origin !== '' && (
-              <p role="alert" className="rounded-[var(--radius-sm)] bg-[var(--warn-wash)] p-2 text-xs text-[var(--warn)]">
+              <p role="alert" className="rounded-[var(--radius-sm)] bg-[var(--warn-wash)] p-2.5 text-xs text-[var(--warn)]">
                 Market images have to be fetchable from a public HTTPS address, and Panta fetches
                 them itself. This build is running on <code>{origin}</code>, so a market created
                 here would be rejected after you paid the fee. Deploy first.
@@ -351,7 +360,7 @@ export function CreateSheet({
                 else if (state.stage === 'error') void flow.requote()
               }}
               disabled={!ready || !fetchable || flow.busy || !!state.duplicateOf}
-              className="min-h-[2.75rem] rounded-[var(--radius)] bg-[var(--accent)] font-semibold text-[var(--surface)] disabled:opacity-40"
+              className="btn btn-primary w-full"
             >
               {buttonLabel(state.stage, ready, fetchable, state.feeChanged)}
             </button>
@@ -360,16 +369,24 @@ export function CreateSheet({
 
         {/* ── In flight ─────────────────────────────────────────────────── */}
         {STAGE_COPY[state.stage] && (
-          <div className="flex flex-col gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3">
-            <p className="text-sm">{STAGE_COPY[state.stage]}</p>
+          <div className="pulse-card flex flex-col gap-2 p-3">
+            <p className="text-sm font-medium">
+              <span className="mr-2 inline-block size-1.5 animate-pulse rounded-full bg-[var(--accent)]" aria-hidden />
+              {STAGE_COPY[state.stage]}
+            </p>
             {state.signature && <TxLink signature={state.signature} className="text-xs" />}
           </div>
         )}
 
         {/* ── Done ──────────────────────────────────────────────────────── */}
         {state.stage === 'done' && (
-          <div className="flex flex-col gap-2 rounded-[var(--radius)] border border-[var(--yes)]/30 bg-[var(--yes-wash)] p-3">
-            <p className="text-sm font-medium text-[var(--yes-strong)]">Market is live</p>
+          <div className="flex flex-col gap-2 rounded-[var(--radius)] border border-[color-mix(in_oklch,var(--yes)_30%,transparent)] bg-[var(--yes-wash)] p-4">
+            <p className="flex items-center gap-2 text-base font-bold tracking-tight text-[var(--yes-strong)]">
+              <span className="grid size-6 place-items-center rounded-full bg-[var(--yes)] text-white">
+                <Check size={14} weight="bold" />
+              </span>
+              Market is live
+            </p>
             <p className="text-xs text-[var(--text-muted)]">
               {usdc(Number(state.buildFee))} paid. It is in the room and tradable now.
             </p>
@@ -381,7 +398,7 @@ export function CreateSheet({
           <button
             type="button"
             onClick={onClose}
-            className="min-h-[2.75rem] rounded-[var(--radius)] border border-[var(--border)] font-semibold"
+            className="btn btn-ghost w-full"
           >
             Done
           </button>

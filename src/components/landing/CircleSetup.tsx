@@ -12,6 +12,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { ArrowRight, ArrowUpRight } from '@phosphor-icons/react'
 import { useWalletContext } from '@/lib/wallet/WalletProvider'
 import {
   ApiError,
@@ -65,10 +66,13 @@ export function CircleSetup() {
 
   if (!connected) {
     return (
-      <p className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] p-4 text-sm text-[var(--text-muted)]">
-        Connect a wallet to start or join a circle. There is no sign-up — your wallet is your
-        account.
-      </p>
+      <div className="pulse-card flex flex-col gap-1 p-5">
+        <p className="font-semibold">Connect a wallet to get a table.</p>
+        <p className="text-sm text-[var(--text-muted)]">
+          There is no sign-up. Your wallet is your account, and it already has
+          what this needs.
+        </p>
+      </div>
     )
   }
 
@@ -76,17 +80,22 @@ export function CircleSetup() {
   if (circles && circles.length > 0) {
     return (
       <div className="flex flex-col gap-3">
-        <p className="text-sm text-[var(--text-muted)]">You&apos;re in:</p>
+        <p className="label">Your circles</p>
         <ul className="flex flex-col gap-2">
           {circles.map((circle) => (
             <li key={circle.id}>
               <button
                 type="button"
                 onClick={() => router.push(`/c/${circle.id}`)}
-                className="flex min-h-[3.25rem] w-full items-center justify-between gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] px-4 text-left"
+                className="flex min-h-[3.5rem] w-full items-center justify-between gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] px-4 text-left shadow-[var(--shadow-card)] transition-colors hover:border-[var(--border-strong)]"
               >
-                <span className="font-medium">{circle.name}</span>
-                <span className="font-mono text-sm text-[var(--text-faint)]">{circle.code}</span>
+                <span className="truncate font-semibold">{circle.name}</span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <code className="font-mono text-xs tracking-wider text-[var(--text-faint)]">
+                    {circle.code}
+                  </code>
+                  <ArrowUpRight size={16} weight="bold" className="text-[var(--text-faint)]" />
+                </span>
               </button>
             </li>
           ))}
@@ -118,15 +127,16 @@ export function CircleSetup() {
         }
       >
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium">What is it called?</span>
+          <span className="label">What is it called?</span>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Sunday match"
             maxLength={60}
+            autoComplete="off"
             // eslint-disable-next-line jsx-a11y/no-autofocus
             autoFocus
-            className="min-h-[2.75rem] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3"
+            className="input"
           />
         </label>
         <p className="text-xs text-[var(--text-faint)]">
@@ -152,7 +162,7 @@ export function CircleSetup() {
         }
       >
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium">Invite code</span>
+          <span className="label">Invite code</span>
           <input
             value={code}
             onChange={(e) => setCode(e.target.value.toUpperCase())}
@@ -163,9 +173,12 @@ export function CircleSetup() {
             spellCheck={false}
             // eslint-disable-next-line jsx-a11y/no-autofocus
             autoFocus
-            className="min-h-[3.25rem] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 text-center font-mono text-xl tracking-[0.2em]"
+            className="input min-h-[3.5rem] text-center font-mono text-2xl font-semibold tracking-[0.28em]"
           />
         </label>
+        <p className="text-xs text-[var(--text-faint)]">
+          The four-to-eight-character code the host shared. Case does not matter.
+        </p>
       </Form>
     )
   }
@@ -180,7 +193,8 @@ export function CircleSetup() {
       <div className="grid gap-3 sm:grid-cols-2">
         <Door
           title="Start a circle"
-          body="You host. You get an invite code."
+          body="You host. You get the invite code."
+          accent
           onClick={() => setMode('create')}
         />
         <Door
@@ -206,14 +220,35 @@ export function CircleSetup() {
   )
 }
 
-function Door({ title, body, onClick }: { title: string; body: string; onClick: () => void }) {
+function Door({
+  title,
+  body,
+  accent = false,
+  onClick,
+}: {
+  title: string
+  body: string
+  accent?: boolean
+  onClick: () => void
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex min-h-[7rem] flex-col items-start justify-end gap-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] p-4 text-left"
+      className={`group flex min-h-[7.25rem] flex-col items-start justify-between gap-3 rounded-[var(--radius)] border bg-[var(--surface-raised)] p-4 text-left shadow-[var(--shadow-card)] transition-all hover:border-[var(--border-strong)] active:scale-[0.99] ${
+        accent ? 'border-[color-mix(in_oklch,var(--accent)_32%,transparent)]' : 'border-[var(--border)]'
+      }`}
     >
-      <span className="text-base font-semibold">{title}</span>
+      <span className="flex w-full items-center justify-between gap-2">
+        <span className="text-base font-bold tracking-tight">{title}</span>
+        <ArrowRight
+          size={18}
+          weight="bold"
+          className={`transition-transform group-hover:translate-x-0.5 ${
+            accent ? 'text-[var(--accent)]' : 'text-[var(--text-faint)]'
+          }`}
+        />
+      </span>
       <span className="text-sm text-[var(--text-muted)]">{body}</span>
     </button>
   )
@@ -242,32 +277,33 @@ function Form({
         e.preventDefault()
         onSubmit()
       }}
-      className="flex flex-col gap-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] p-4"
+      className="pulse-card flex flex-col gap-4 p-5"
     >
-      <h2 className="text-base font-semibold">{title}</h2>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-lg font-bold tracking-tight">{title}</h2>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="min-h-[2.75rem] rounded-[var(--radius)] px-2 text-sm text-[var(--text-muted)] underline underline-offset-2 disabled:opacity-60"
+        >
+          Back
+        </button>
+      </div>
       {children}
       {error && (
         <p role="alert" className="rounded-[var(--radius-sm)] bg-[var(--no-wash)] px-3 py-2 text-sm text-[var(--no-strong)]">
           {error}
         </p>
       )}
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={busy}
-          className="min-h-[2.75rem] rounded-[var(--radius)] border border-[var(--border)] px-4 text-sm"
-        >
-          Back
-        </button>
-        <button
-          type="submit"
-          disabled={busy}
-          className="min-h-[2.75rem] flex-1 rounded-[var(--radius)] bg-[var(--accent)] px-4 font-medium text-white disabled:opacity-60"
-        >
-          {busy ? 'Working…' : submitLabel}
-        </button>
-      </div>
+      <button
+        type="submit"
+        disabled={busy}
+        className="btn btn-primary w-full"
+      >
+        {busy ? 'Working…' : submitLabel}
+        <ArrowRight size={16} weight="bold" />
+      </button>
     </form>
   )
 }

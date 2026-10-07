@@ -23,6 +23,7 @@
  */
 
 import { useEffect, useState } from 'react'
+import { Check, X } from '@phosphor-icons/react'
 import { useBuyFlow, type BuyStage } from '@/lib/trade/useBuyFlow'
 import { asPrice, priceLabel, usdc, usdcCompact } from '@/lib/format'
 import { TxLink } from '@/components/compliance/PantaCompliance'
@@ -93,9 +94,11 @@ export function BuySheet(props: BuySheetProps) {
     : 0
   const drifted = Math.abs(drift) >= 0.01
 
+  const isYes = side === 'yes'
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center"
+      className="sheet-scrim"
       onClick={(e) => {
         // Tapping the scrim closes, but only when nothing is in flight. Closing
         // mid-sign would abandon an order the user already approved.
@@ -109,18 +112,20 @@ export function BuySheet(props: BuySheetProps) {
         role="dialog"
         aria-modal="true"
         aria-label={`Buy ${side.toUpperCase()}`}
-        className="flex max-h-[92vh] w-full max-w-md flex-col gap-4 overflow-y-auto rounded-t-[var(--radius)] border-t border-[var(--border)] bg-[var(--surface-raised)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:rounded-[var(--radius)] sm:border"
+        className="sheet"
       >
+        <span className="sheet-handle" aria-hidden />
+
         <header className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p
-              className={`text-xs font-semibold uppercase tracking-wide ${
-                side === 'yes' ? 'text-[var(--yes)]' : 'text-[var(--no)]'
-              }`}
+              className={`label ${isYes ? 'text-[var(--yes)]' : 'text-[var(--no)]'}`}
             >
               Buy {side.toUpperCase()}
             </p>
-            <h2 className="mt-0.5 text-sm font-medium leading-snug">{marketTitle}</h2>
+            <h2 className="mt-0.5 text-sm font-semibold leading-snug tracking-tight">
+              {marketTitle}
+            </h2>
           </div>
           <button
             type="button"
@@ -130,20 +135,20 @@ export function BuySheet(props: BuySheetProps) {
             }}
             disabled={IN_FLIGHT.has(state.stage)}
             aria-label="Close"
-            className="-mr-1 -mt-1 rounded p-2 text-[var(--text-faint)] disabled:opacity-40"
+            className="-mr-1 -mt-1 rounded-[var(--radius)] p-2 text-[var(--text-faint)] transition-colors hover:text-[var(--text)] disabled:opacity-40"
           >
-            ✕
+            <X size={18} weight="bold" />
           </button>
         </header>
 
         {/* ── Amount ─────────────────────────────────────────────────────── */}
         {state.stage !== 'done' && (
           <div className="flex flex-col gap-2">
-            <label htmlFor="buy-amount" className="text-xs text-[var(--text-muted)]">
+            <label htmlFor="buy-amount" className="label">
               Amount
             </label>
-            <div className="flex items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] px-3">
-              <span className="text-sm text-[var(--text-faint)]">$</span>
+            <div className="flex items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 transition-[border-color,box-shadow] focus-within:border-[var(--accent)] focus-within:shadow-[0_0_0_3px_color-mix(in_oklch,var(--accent)_18%,transparent)]">
+              <span className="font-mono text-lg font-semibold text-[var(--text-faint)]">$</span>
               <input
                 id="buy-amount"
                 type="number"
@@ -153,22 +158,32 @@ export function BuySheet(props: BuySheetProps) {
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
                 disabled={busy}
-                className="min-w-0 flex-1 bg-transparent py-3 font-mono text-lg outline-none"
+                className="min-w-0 flex-1 bg-transparent py-3 font-mono text-2xl font-bold tracking-tight outline-none"
               />
-              <span className="text-xs text-[var(--text-faint)]">USDC</span>
+              <span className="font-mono text-[11px] uppercase tracking-wider text-[var(--text-faint)]">
+                USDC
+              </span>
             </div>
-            <div className="flex gap-2">
-              {PRESETS.map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => setAmount(preset)}
-                  disabled={busy}
-                  className="flex-1 rounded-[var(--radius-sm)] border border-[var(--border)] py-2 text-xs font-medium disabled:opacity-40"
-                >
-                  ${preset}
-                </button>
-              ))}
+            <div className="grid grid-cols-4 gap-2">
+              {PRESETS.map((preset) => {
+                const selected = amount === preset
+                return (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setAmount(preset)}
+                    disabled={busy}
+                    aria-pressed={selected}
+                    className={`rounded-[var(--radius-sm)] border py-2 text-xs font-semibold transition-colors disabled:opacity-40 ${
+                      selected
+                        ? 'border-[var(--accent)] bg-[var(--accent-wash)] text-[var(--accent)]'
+                        : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-strong)]'
+                    }`}
+                  >
+                    ${preset}
+                  </button>
+                )
+              })}
             </div>
             <p className="text-xs text-[var(--text-faint)]">
               Up to {DEFAULT_SLIPPAGE_BPS / 100}% price movement. This is real money and
@@ -179,19 +194,29 @@ export function BuySheet(props: BuySheetProps) {
 
         {/* ── The quote ───────────────────────────────────────────────────── */}
         {(state.stage === 'quoting' || state.stage === 'quoted' || state.stage === 'building') && (
-          <div className="flex flex-col gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] p-3">
-            {state.stage === 'quoting' && <p className="text-sm text-[var(--text-muted)]">Pricing…</p>}
+          <div className="pulse-card flex flex-col gap-2 p-3">
+            {state.stage === 'quoting' && (
+              <p className="text-sm text-[var(--text-muted)]">
+                <span className="mr-2 inline-block size-1.5 animate-pulse rounded-full bg-[var(--accent)]" aria-hidden />
+                Pricing…
+              </p>
+            )}
 
             {state.stage !== 'quoting' && state.quote && (
               <>
-                <Row label="Price" value={priceLabel(asPrice(Number(state.effectiveAvgPrice)))} />
-                <Row label="Shares" value={usdcCompact(Number(state.effectiveShares))} />
+                <div className="flex items-end justify-between gap-2 border-b border-[var(--border)] pb-2.5">
+                  <span className="pb-1 text-sm text-[var(--text-muted)]">Price</span>
+                  <span className={`font-mono text-[1.65rem] font-bold leading-none tracking-tight ${isYes ? 'text-[var(--yes-strong)]' : 'text-[var(--no-strong)]'}`}>
+                    {priceLabel(asPrice(Number(state.effectiveAvgPrice)))}
+                  </span>
+                </div>
+                <Row label="Shares you get" value={usdcCompact(Number(state.effectiveShares))} />
                 <Row label="Fee" value={usdc(Number(state.feeUsdc))} />
                 {state.quoteSecondsLeft !== null && (
                   <p
                     className={`text-xs ${
                       state.quoteSecondsLeft <= 20
-                        ? 'font-medium text-[var(--warn)]'
+                        ? 'font-semibold text-[var(--warn)]'
                         : 'text-[var(--text-faint)]'
                     }`}
                   >
@@ -218,16 +243,24 @@ export function BuySheet(props: BuySheetProps) {
 
         {/* ── In flight ───────────────────────────────────────────────────── */}
         {(state.stage === 'signing' || state.stage === 'broadcasting' || state.stage === 'confirming') && (
-          <div className="flex flex-col gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-raised)] p-3">
-            <p className="text-sm">{STAGE_COPY[state.stage]}</p>
+          <div className="pulse-card flex flex-col gap-2 p-3">
+            <p className="text-sm font-medium">
+              <span className="mr-2 inline-block size-1.5 animate-pulse rounded-full bg-[var(--accent)]" aria-hidden />
+              {STAGE_COPY[state.stage]}
+            </p>
             {state.signature && <TxLink signature={state.signature} className="text-xs" />}
           </div>
         )}
 
         {/* ── Done ────────────────────────────────────────────────────────── */}
         {state.stage === 'done' && (
-          <div className="flex flex-col gap-2 rounded-[var(--radius)] border border-[var(--yes)]/30 bg-[var(--yes-wash)] p-3">
-            <p className="text-sm font-medium text-[var(--yes-strong)]">Bought {side.toUpperCase()}</p>
+          <div className="flex flex-col gap-2 rounded-[var(--radius)] border border-[color-mix(in_oklch,var(--yes)_30%,transparent)] bg-[var(--yes-wash)] p-4">
+            <p className="flex items-center gap-2 text-base font-bold tracking-tight text-[var(--yes-strong)]">
+              <span className="grid size-6 place-items-center rounded-full bg-[var(--yes)] text-white">
+                <Check size={14} weight="bold" />
+              </span>
+              Bought {side.toUpperCase()}
+            </p>
             {state.signature && <TxLink signature={state.signature} className="text-xs" />}
           </div>
         )}
@@ -252,11 +285,7 @@ export function BuySheet(props: BuySheetProps) {
               else if (state.stage === 'error') void flow.quote()
             }}
             disabled={!amountValid || busy || (state.stage !== 'quoted' && state.stage !== 'error')}
-            className={`min-h-[2.75rem] rounded-[var(--radius)] font-semibold disabled:opacity-50 ${
-              side === 'yes'
-                ? 'bg-[var(--yes-wash)] text-[var(--yes-strong)]'
-                : 'bg-[var(--no-wash)] text-[var(--no-strong)]'
-            }`}
+            className={`btn w-full ${isYes ? 'btn-yes' : 'btn-no'}`}
           >
             {stageLabel(state.stage, side, amountValid)}
           </button>
@@ -269,7 +298,7 @@ export function BuySheet(props: BuySheetProps) {
               flow.reset()
               onClose()
             }}
-            className="min-h-[2.75rem] rounded-[var(--radius)] border border-[var(--border)] font-semibold"
+            className="btn btn-ghost w-full"
           >
             Done
           </button>
@@ -281,7 +310,7 @@ export function BuySheet(props: BuySheetProps) {
           <button
             type="button"
             onClick={() => void flow.quote()}
-            className="text-xs text-[var(--text-muted)] underline"
+            className="text-xs text-[var(--text-muted)] underline underline-offset-2"
           >
             Get a fresh price
           </button>
@@ -331,7 +360,7 @@ function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-2 text-sm">
       <span className="text-[var(--text-muted)]">{label}</span>
-      <span className="font-mono">{value}</span>
+      <span className="font-mono font-medium tabular-nums">{value}</span>
     </div>
   )
 }
