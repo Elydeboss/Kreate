@@ -1,36 +1,44 @@
 import 'server-only'
 
+import { assertFilled, optionalValue, requirePresent } from './env-check'
+
 /**
- * The single place environment variables are read and validated.
+ * The single place environment variables are read.
  *
  * Nothing else in the codebase calls process.env directly. If a component or a
  * route needs a secret, it imports from here — which keeps every secret behind
  * the `server-only` guard and out of the client bundle.
  *
  * See AGENTS.md rule 1: no secret is ever NEXT_PUBLIC_.
+ *
+ * The validation lives in ./env-check, which is not `server-only`. That split is
+ * not tidiness: a guard that cannot be imported by the verify script is a guard
+ * that cannot be tested, and an untested guard is a comment.
+ *
+ * ⚠ THESE CONSTS CHECK PRESENCE ONLY, NOT WHETHER THEY ARE STILL PLACEHOLDERS.
+ * Validating placeholders at module scope throws while `next build` imports
+ * route modules to collect page data, which makes the build unrunnable on every
+ * machine that is not production — a fresh checkout, CI, the laptop you are
+ * about to deploy from. So the placeholder check is made at USE instead, by
+ * `assertFilled` called from the Panta client and the DB pool. The build
+ * succeeds; the first real request says which one variable it needed.
+ *
+ * `db:migrate` is the exception: it is a script, never bundled, and uses the
+ * value immediately, so it takes the strict form.
  */
-
-class MissingEnvError extends Error {
-  constructor(name: string) {
-    super(
-      `Missing required environment variable: ${name}. ` +
-        `Copy .env.example to .env.local and fill it in.`,
-    )
-    this.name = 'MissingEnvError'
-  }
-}
-
 function required(name: string): string {
-  const value = process.env[name]
-  if (!value || value.trim() === '') throw new MissingEnvError(name)
-  return value.trim()
+  return requirePresent(name, process.env[name])
 }
 
 function optional(name: string, fallback: string): string {
-  const value = process.env[name]
-  if (!value || value.trim() === '') return fallback
-  return value.trim()
+  return optionalValue(process.env[name], fallback)
 }
+
+/**
+ * Re-exported so the two consumers of a secret can check it without reaching
+ * past this module, and without each of them re-deriving what a placeholder is.
+ */
+export { assertFilled }
 
 /**
  * Panta API key. `pk_test_` and `pk_live_` both hit the same public API — the

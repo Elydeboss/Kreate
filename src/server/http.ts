@@ -15,6 +15,7 @@ import { IdempotencyError, IDEMPOTENCY_HEADER } from './idempotency'
 import { InvalidWalletError, MissingWalletError } from './identity'
 import { InvariantError } from './guards'
 import { PantaError } from '@/lib/panta/errors'
+import { MissingEnvError, UnfilledEnvError } from '@/lib/server/env-check'
 
 export function jsonOk<T>(data: T, init?: ResponseInit): NextResponse {
   return NextResponse.json(data as object, init)
@@ -79,6 +80,17 @@ export function handleRouteError(err: unknown, context: string): NextResponse {
     return NextResponse.json(
       { error: err.message, code: err.code },
       { status: callerFault ? 400 : 500 },
+    )
+  }
+
+  // A broken deployment config, not a request problem. The response names the
+  // variable so a fresh setup sees what to fix at the API boundary rather than
+  // only in a server log — the message is the entire point of the class.
+  if (err instanceof MissingEnvError || err instanceof UnfilledEnvError) {
+    console.error(`[api/${context}] env`, err.message)
+    return NextResponse.json(
+      { error: err.message, code: 'ENV_UNFILLED' },
+      { status: 500 },
     )
   }
 

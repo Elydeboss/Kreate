@@ -17,7 +17,7 @@ import 'server-only'
  *   - Cached reads return `asOf` and `stale` so the UI can satisfy ToU §5.
  */
 
-import { PANTA_API_KEY, PANTA_BASE_URL } from '@/lib/server/env'
+import { assertFilled, PANTA_API_KEY, PANTA_BASE_URL } from '@/lib/server/env'
 import { PantaError, describePantaError } from './errors'
 import { acquirePermit, isOpen, recordFailure, recordSuccess } from './breaker'
 import { acquire, reconcileFromHeaders, retryAfterFromHeaders, type RateFamily } from './limiter'
@@ -137,6 +137,22 @@ async function attempt<T>(
   opts: PantaRequestOptions,
   requestId: string,
 ): Promise<AttemptOutcome> {
+  // 0. The credential is still a template placeholder. Checked here, before the
+  //    breaker and the limiter, for two reasons.
+  //
+  //    First, PLACEMENT. Inside the try block further down, the catch-all that
+  //    classifies transport failures would swallow this error, relabel it
+  //    `NETWORK_ERROR`, and RECORD a circuit failure for it — so a fresh setup
+  //    with an unfilled .env would open the breaker on its very first request
+  //    and every subsequent legitimate call would see SERVICE_UNAVAILABLE. A
+  //    config error is not a network outage and must not be treated as one.
+  //
+  //    Second, MESSAGE. Thrown before the wrapping that builds PantaError
+  //    objects, it propagates as `UnfilledEnvError`, whose message is the one
+  //    sentence that says which variable to edit. Relabelled, it becomes a 504
+  //    with the sentence buried in a detail string.
+  assertFilled('PANTA_API_KEY', PANTA_API_KEY)
+
   // 1. Circuit breaker. Refused fast, so a dead upstream does not consume the
   //    function timeout budget on every request.
   const permit = acquirePermit(BREAKER_NAME)

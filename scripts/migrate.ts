@@ -3,6 +3,14 @@
  *
  *   npm run db:migrate
  *
+ * LOADS .env ITSELF, via `--env-file-if-exists=.env` in the npm script. Plain
+ * Node does not read .env the way Next.js does, so without that flag this
+ * script reports "DATABASE_URL is not set" while a perfectly good .env sits
+ * next to it — which reads as a broken config file rather than a missing flag.
+ * The flag is on this script alone: `verify` and `tiles` read no env var, and
+ * --env-file-if-exists prints a warning when the file is absent, which would be
+ * pure noise for a fresh clone.
+ *
  * Tracks applied files in schema_migrations. Each file runs inside its own
  * transaction, so a failure leaves that file unapplied and everything before it
  * intact. No down-migrations — for a 16-day hackathon, forward-only is the right
@@ -13,19 +21,21 @@ import { readdir, readFile } from 'node:fs/promises'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Client } from 'pg'
+import { requireValue } from '../src/lib/server/env-check.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const MIGRATIONS_DIR = resolve(__dirname, '..', 'db', 'migrations')
 
-const CONNECTION_STRING = process.env.DATABASE_URL
-if (!CONNECTION_STRING) {
-  console.error('DATABASE_URL is not set. Copy .env.example to .env.local first.')
-  process.exit(1)
-}
-
 async function main(): Promise<void> {
+  // Inside main(), not at module top level. A top-level throw happens during
+  // import, before main() ever returns a promise, so the handler below never
+  // sees it — the guard's one actionable sentence would be replaced by a stack
+  // trace pointing into env-check.ts, which is the exact failure it was written
+  // to prevent.
+  const connectionString = requireValue('DATABASE_URL', process.env.DATABASE_URL)
+
   const client = new Client({
-    connectionString: CONNECTION_STRING,
+    connectionString,
     ssl: process.env.DATABASE_SSL === 'disable' ? false : { rejectUnauthorized: false },
   })
   await client.connect()
@@ -84,6 +94,12 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err)
+  // The env guards' messages are written to be read, not debugged. Printing a
+  // stack trace above one buries the one line that says what to do.
+  if (err instanceof Error && (err.name === 'MissingEnvError' || err.name === 'UnfilledEnvError')) {
+    console.error(`\n  ${err.message}\n`)
+  } else {
+    console.error(err)
+  }
   process.exit(1)
 })

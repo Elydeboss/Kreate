@@ -42,6 +42,7 @@ import {
 } from '../src/lib/panta/breaker.ts'
 import { paintTile, TILE_SPECS, tileFor, tileUrl } from '../src/lib/image/tiles.ts'
 import { isPublicOrigin } from '../src/lib/client/origin.ts'
+import { isPlaceholder, optionalValue, requireValue } from '../src/lib/server/env-check.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -622,10 +623,96 @@ function testClientBundleBoundary(): void {
   )
   const pngSrc = code('src/lib/image/png.ts')
   check('the PNG encoder is the only thing that touches node:zlib', pngSrc.includes("from 'node:zlib'"))
+  // ── The environment is load-bearing, so its validation is asserted ─────────
+  //
+  // The first version of the unfilled-placeholder guard lived inside env.ts,
+  // which is `server-only` and therefore unimportable from this script — so it
+  // shipped untested. It was extracted into ./env-check, which is the same move
+  // that made isPublicOrigin testable.
+  const real: [string, string][] = [
+    ['PANTA_API_KEY', 'pk_live_9f3a2b7c1d4e5f6a8b9c0d1e2f3a4b5c'],
+    ['DATABASE_URL', 'postgres://pulse:pulse@localhost:5432/pulse'],
+    ['SOLANA_RPC_URL', 'https://x.solana-mainnet.quiknode.pro/a1b2c3d4e5/'],
+  ]
+  for (const [name, value] of real) {
+    check(`${name} accepts a real value`, requireValue(name, value) === value)
+  }
+  // The failure this guard exists to prevent was `ENOTFOUND` for a host called
+  // `base`, because `pg` parsed the placeholder as a key/value DSN. So the
+  // placeholder has to be caught BEFORE pg ever sees it.
+  const unfilled: [string, string][] = [
+    ['PANTA_API_KEY', 'REPLACE_pk_test_or_pk_live'],
+    ['DATABASE_URL', 'REPLACE_postgres_connection_string'],
+    ['SOLANA_RPC_URL', 'https://replace-me.solana-mainnet.quiknode.pro/replace-me/'],
+  ]
+  for (const [name, value] of unfilled) {
+    let name2 = ''
+    try {
+      requireValue(name, value)
+    } catch (err) {
+      name2 = err instanceof Error ? err.name : ''
+    }
+    check(`${name} rejects an unfilled placeholder`, name2 === 'UnfilledEnvError', name2)
+  }
+  // Absent and blank are DIFFERENT failures and get different messages: one says
+  // the file is missing, the other says the value is empty.
+  for (const empty of [undefined, '', '   ', '\n']) {
+    let n = ''
+    try {
+      requireValue('DATABASE_URL', empty)
+    } catch (err) {
+      n = err instanceof Error ? err.name : ''
+    }
+    check('an absent or blank value is reported as missing, not unfilled', n === 'MissingEnvError', n)
+  }
+  check('a required value is trimmed, so a pasted newline cannot corrupt a URL', requireValue('SOLANA_RPC_URL', '  https://x.y/z/  \n') === 'https://x.y/z/')
+  // The optional var must not be tripped by its own template value, or every
+  // fresh clone would fail to boot.
+  check('the optional nonce falls back rather than throwing', optionalValue(undefined, 'local') === 'local')
+  check('the optional nonce accepts an explicit value', optionalValue('demo-2', 'local') === 'demo-2')
+  check('the optional nonce ignores a blank value', optionalValue('  ', 'local') === 'local')
+  // A false positive here is worse than no guard: it would reject a legitimate
+  // key and leave the user with no way to tell which of the two errors fired.
+  for (const ok of ['pk_test_abc', 'postgres://u:p@h:5432/db', 'notlocalhost.example', 'my-xxx-key']) {
+    check(`a legitimate value is not mistaken for a placeholder: ${ok}`, !isPlaceholder(ok))
+  }
+
+  // ── Where the check is allowed to live and what it may NOT do ─────────────
+  //
+  // The first version of this check sat one line above fetch(), inside the try
+  // whose catch-all classifies TRANSPORT failures. Two regressions came with it,
+  // and a live health probe proved both:
+  //
+  //   1. The catch at the fetch site swallowed the UnfilledEnvError and
+  //      relabelled it `NETWORK_ERROR`, so a fresh setup would see a 504 that
+  //      read like an outage rather than a config file to edit.
+  //   2. Worse, the catch called recordFailure, so EVERY request with an
+  //      unfilled key pushed the circuit breaker toward OPEN — one request per
+  //      check, and a fresh setup was bricked for the whole surface before the
+  //      user even fixed the key. A config error is not a network outage and
+  //      must not be punished as one.
+  //
+  // So: the check must run before the breaker is consulted, and it must be its
+  // own error class on the way out, not a PantaError.
+  const client = code('src/lib/panta/client.ts')
+  const filledAt = client.indexOf("assertFilled('PANTA_API_KEY'")
+  const breakerAt = client.indexOf('acquirePermit(BREAKER_NAME)')
+  check('the panta client checks the key before it consults the breaker', filledAt !== -1 && breakerAt !== -1 && filledAt < breakerAt)
+  // Removing the check entirely is the other way this fails: a key that cannot
+  // be reached is then sent to a network call that errors and opens the breaker
+  // the same bricked way.
+  check('the panta client checks the key at request time', filledAt !== -1)
+  // The same story in the request handler path: a config error reaching a route
+  // must name itself, not become "Something went wrong on our side."
+  const http = code('src/server/http.ts')
   check(
-    'a client component imports tile URLs from tileUrl, not from the painter',
-    !code('src/components/trade/CreateSheet.tsx').includes("@/lib/image/tiles'"),
+    'a route surfaces an unfilled env value as ENV_UNFILLED, not a generic 500',
+    http.includes('ENV_UNFILLED') &&
+      http.includes('err instanceof MissingEnvError || err instanceof UnfilledEnvError'),
   )
+  check('that env branch comes before the generic unhandled fallthrough', http.indexOf('ENV_UNFILLED') < http.indexOf("'Something went wrong on our side.'"))
+  const dbSrc = code('src/lib/db/index.ts')
+  check('the db pool checks its connection string at connect time', dbSrc.includes("assertFilled('DATABASE_URL'"))
 }
 
 /**

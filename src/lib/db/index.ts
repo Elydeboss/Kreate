@@ -16,7 +16,7 @@ import 'server-only'
  */
 
 import { Pool, type PoolClient, type QueryResultRow } from 'pg'
-import { DATABASE_URL } from '@/lib/server/env'
+import { assertFilled, DATABASE_URL } from '@/lib/server/env'
 
 /**
  * The minimum surface a query module needs. Both the pool and a checked-out
@@ -40,6 +40,11 @@ let pool: Pool | null = null
  */
 export function getPool(): Pool {
   if (!pool) {
+    // The point where the connection string is actually spent. Checked here
+    // rather than in env.ts for the same reason as the Panta key: `next build`
+    // must not fail because a value it never reads is still a placeholder.
+    assertFilled('DATABASE_URL', DATABASE_URL)
+
     pool = new Pool({
       connectionString: DATABASE_URL,
       max: 2,
