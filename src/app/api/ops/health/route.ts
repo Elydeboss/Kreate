@@ -59,10 +59,12 @@ export async function GET() {
     }
   }
 
-  // 3. Categories, cached hard. If this fails, the create form has no chips.
+  // 3. Categories, cached hard. Parse both envelope shapes Panta has served
+  //    (bare array and {categories: [...]}) instead of trusting one.
   try {
     const { value } = await panta.categories()
-    const count = Array.isArray(value) ? value.length : 0
+    const list = Array.isArray(value) ? value : (value as { categories?: unknown[] } | null)?.categories
+    const count = Array.isArray(list) ? list.length : 0
     checks.categories = { ok: count > 0, detail: `${count} categories` }
   } catch (err) {
     checks.categories = {
